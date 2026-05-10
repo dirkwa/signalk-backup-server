@@ -1,0 +1,48 @@
+name: Build Image
+
+# Build the multi-arch container image (no push) on PRs and main pushes
+# that touch image-relevant files. Catches Dockerfile regressions before
+# merge without burning ~5-8 minutes of QEMU time on docs/CI/test-only
+# changes. Tag-driven publishes use the separate publish.yml workflow.
+#
+# If you suspect the path filter is hiding a regression, trigger
+# manually via the Actions UI (workflow_dispatch).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - ".github/workflows/build-image.yml"
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - ".github/workflows/build-image.yml"
+  workflow_dispatch:
+
+jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # Build both arches but don't push — verifies the Dockerfile works.
+      - name: Build (amd64 + arm64, no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          tags: signalk-backup-server:ci
