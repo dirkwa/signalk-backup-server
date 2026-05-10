@@ -39,8 +39,10 @@ updates:
           - minor
           - patch
 
-  # Dockerfile base + deps (kopia/rclone are pinned via ARG, not picked up here;
-  # this catches updates to the wolfi-base image and any other FROM/RUN apk lines)
+  # Dockerfile FROM image tags only — Dependabot's docker ecosystem
+  # updates `FROM <image>:<tag>` references (so the wolfi-base bumps
+  # come through). It does NOT update packages installed via `RUN apk
+  # add ...`; kopia/rclone are pinned via ARG and need manual bumps.
   - package-ecosystem: docker
     directory: "/"
     schedule:

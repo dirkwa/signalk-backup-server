@@ -17,35 +17,14 @@ on:
         type: string
 
 jobs:
-  # GitHub Release with auto-generated notes (categorised via .github/release.yml).
-  # Tag-triggered only — workflow_dispatch publishes the image but does not
-  # create a Release (dispatch runs have no tag to attach the release to).
-  release:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          generate_release_notes: true
-          prerelease: ${{ contains(github.ref_name, '-beta.') || contains(github.ref_name, '-rc.') }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+  # Image push runs first. The Release job below depends on it via
+  # `needs: publish` so we never tag a Release whose corresponding image
+  # didn't make it to the registry.
   publish:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-      id-token: write
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: ${{ github.repository_owner }}/signalk-backup-server
@@ -85,3 +64,29 @@ jobs:
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
           provenance: false
+
+  # GitHub Release with auto-generated notes (categorised via
+  # .github/release.yml). Tag-triggered only — workflow_dispatch
+  # publishes the image but does not create a Release (no tag context).
+  # Gated on the publish job so a failed image push won't leave a
+  # Release pointing at a missing image.
+  release:
+    needs: publish
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-beta.') || contains(github.ref_name, '-rc.') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
