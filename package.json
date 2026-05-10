@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@sinclair/typebox": "^0.34.30",
-    "archiver": "^7.0.1",
+    "archiver": "^8.0.0",
     "better-sse": "^0.16.1",
     "cors": "^2.8.5",
     "express": "^4.21.2",
