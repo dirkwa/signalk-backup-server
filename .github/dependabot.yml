@@ -1,0 +1,47 @@
+version: 2
+updates:
+  # Server backend
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # @types/node major versions track the Node.js major. Pin to the
+      # lowest supported runtime (Node 22 per package.json engines) so
+      # types reflect what's actually available on every supported version.
+      # Allow updates within the v22.x line; ignore v23+.
+      - dependency-name: "@types/node"
+        versions: [">=23"]
+
+  # Vite/React UI bundle (separate package.json)
+  - package-ecosystem: npm
+    directory: "/src/ui"
+    schedule:
+      interval: weekly
+    groups:
+      ui-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        update-types:
+          - minor
+          - patch
+
+  # Dockerfile base + deps (kopia/rclone are pinned via ARG, not picked up here;
+  # this catches updates to the wolfi-base image and any other FROM/RUN apk lines)
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
