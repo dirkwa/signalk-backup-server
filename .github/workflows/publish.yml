@@ -1,14 +1,20 @@
 name: Publish container image
 
-# Triggers on tag push (vX.Y.Z). The tag drives both the version label and
-# the published image tag. We push a multi-arch manifest list so a single
-# tag (e.g. `:0.1.0` or `:latest`) resolves to the right arch automatically
-# on the puller's host. amd64 builds natively, arm64 under QEMU emulation
-# (fine for our small image — slow part is npm/tsc which is arch-independent).
+# Triggers on semver tag push (vX.Y.Z, optionally with -beta./-rc.
+# suffix). The tag drives both the version label and the published
+# image tag. We push a multi-arch manifest list so a single tag (e.g.
+# `:0.1.0` or `:latest`) resolves to the right arch automatically on
+# the puller's host. amd64 builds natively, arm64 under QEMU emulation
+# (fine for our small image — slow part is npm/tsc which is
+# arch-independent).
+#
+# Tag glob is intentionally tight ('v[0-9]*.[0-9]*.[0-9]*') so stray
+# tags like `vendor-fix` or `vnext` don't trigger a publish. Prerelease
+# suffixes still match (the glob looks at the leading digits only).
 
 on:
   push:
-    tags: ["v*"]
+    tags: ["v[0-9]*.[0-9]*.[0-9]*"]
   workflow_dispatch:
     inputs:
       tag:
@@ -31,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve version
+      - name: Resolve version + tags
         id: version
         run: |
           if [[ "${{ github.event_name }}" == "push" ]]; then
@@ -40,6 +46,20 @@ jobs:
             VERSION="${{ github.event.inputs.tag }}"
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+          # Build the image tag list. Stable releases get :VERSION + :latest;
+          # prereleases (containing -beta. or -rc.) get :VERSION only, so a
+          # `v1.2.3-rc.1` push never overwrites the stable :latest pointer.
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          {
+            echo 'tags<<EOF'
+            echo "${IMAGE}:${VERSION}"
+            if [[ "${VERSION}" != *-beta.* && "${VERSION}" != *-rc.* ]]; then
+              echo "${IMAGE}:latest"
+            fi
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
           echo "Publishing version: ${VERSION}"
 
       - uses: docker/setup-qemu-action@v3
@@ -58,9 +78,7 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          tags: ${{ steps.version.outputs.tags }}
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
           provenance: false
