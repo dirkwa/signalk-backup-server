@@ -52,12 +52,6 @@ const configSchema = Type.Object({
   /** SignalK server version, set by the plugin via env (used to tag backups). */
   signalkVersion: Type.String({ default: 'unknown' }),
 
-  /** Public base URL of the backup-server UI as seen from the user's browser.
-   *  Set by the plugin via env (resolved via signalk-container's resolveContainerAddress).
-   *  Returned by GET /api/gui-url for the plugin's redirect HTML.
-   */
-  guiPublicUrl: Type.String({ default: '' }),
-
   /** Maximum upload file size in bytes (default 1GB). */
   maxUploadSize: Type.Number({ default: 1024 * 1024 * 1024 }),
 
@@ -81,7 +75,6 @@ export function loadConfig(): Config {
     rcloneBinaryPath: process.env['RCLONE_BINARY_PATH'] ?? '/usr/local/bin/rclone',
     rcloneConfigPath: process.env['RCLONE_CONFIG_PATH'] ?? join(dataDir, 'rclone.conf'),
     signalkVersion: process.env['SIGNALK_VERSION'] ?? 'unknown',
-    guiPublicUrl: process.env['GUI_PUBLIC_URL'] ?? '',
     maxUploadSize: parseInt(process.env['MAX_UPLOAD_SIZE'] ?? String(1024 * 1024 * 1024), 10),
     logLevel: process.env['LOG_LEVEL'] ?? 'info',
     nodeEnv: process.env['NODE_ENV'] ?? 'development',

@@ -1,7 +1,5 @@
 node_modules/
 dist/
-src/ui/dist/
-src/ui/node_modules/
 
 .idea/
 .vscode/

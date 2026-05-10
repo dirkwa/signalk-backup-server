@@ -4,19 +4,21 @@
  * The container is launched and managed by the signalk-backup plugin via
  * signalk-container's `ensureRunning()`. The plugin sets DATA_DIR (where
  * settings.json + kopia repo live), SIGNALK_DATA_PATH (where ~/.signalk is
- * mounted), GUI_PUBLIC_URL (used by /api/gui-url for the redirect HTML),
- * and SIGNALK_VERSION (used to tag backups).
+ * mounted), and SIGNALK_VERSION (used to tag backups).
  *
- * Network: bound to all interfaces, but only reachable via signalk-container's
- * loopback binding (or shared container network). No JWT — protection is at
- * the network layer.
+ * Headless: no UI is served from this process. The user-facing UI lives in
+ * the signalk-backup plugin's webapp (mounted by SignalK at /signalk-backup/),
+ * which reaches us via the plugin's reverse-proxy at /plugins/signalk-backup/api/.
+ *
+ * Network: bound to all interfaces inside the container, but the plugin's
+ * `signalkAccessiblePorts` config limits the host-side binding to 127.0.0.1.
+ * CORS is restricted to loopback only — no browser ever talks to us directly.
  */
 
 import express from 'express';
 import { createServer } from 'http';
-import path from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync } from 'fs';
+import path from 'path';
 import { mkdir } from 'fs/promises';
 import { createRequire } from 'module';
 import cors from 'cors';
@@ -30,7 +32,6 @@ import { backupRouter } from './api/backup-routes.js';
 import { cloudRouter } from './api/cloud-routes.js';
 import { settingsRouter } from './api/settings-routes.js';
 import { operationRouter } from './api/operation-routes.js';
-import { guiRouter } from './api/gui-routes.js';
 
 import { backupScheduler } from './services/backup-scheduler.js';
 import { cloudSyncService } from './services/cloud-sync-service.js';
@@ -44,19 +45,25 @@ const pinoHttp = require('pino-http') as (opts?: {
   autoLogging?: boolean | { ignore?: (req: { url?: string }) => boolean };
 }) => (req: unknown, res: unknown, next?: () => void) => void;
 
+// __filename / __dirname are not defined in ESM. Resolve them from
+// import.meta.url for any future use (currently nothing in this file
+// needs them, but exposing them is cheap and unsurprising).
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+void __filename;
+void __dirname;
 
 const app = express();
 
+// Loopback-only CORS. The plugin reaches us via host loopback (127.0.0.1)
+// after signalk-container publishes the port; nothing else should ever talk
+// to this process directly. External-mode users (curl/CLI) don't need
+// CORS at all — they don't run in a browser. Tightening from the older
+// loopback+RFC1918+sk-* allowlist closes a class of misconfigurations
+// where a user accidentally exposed the port to their LAN.
 const corsOptions: cors.CorsOptions = {
   origin: (origin, callback) => {
-    if (
-      !origin ||
-      /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ||
-      /^https?:\/\/(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/i.test(origin) ||
-      /^https?:\/\/sk-/i.test(origin)
-    ) {
+    if (!origin || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
       callback(null, true);
     } else {
       callback(null, false);
@@ -83,7 +90,6 @@ app.use('/api/backups', backupRouter);
 app.use('/api/cloud', cloudRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/operations', operationRouter);
-app.use('/api/gui-url', guiRouter);
 
 setRoutePrefixByTag('Health', '/api/health');
 setRoutePrefixByTag('Backups', '/api/backups');
@@ -91,6 +97,8 @@ setRoutePrefixByTag('Cloud', '/api/cloud');
 setRoutePrefixByTag('Settings', '/api/settings');
 setRoutePrefixByTag('Operations', '/api/operations');
 
+// OpenAPI / AsyncAPI surface — kept for direct API consumers (curl,
+// Postman, third-party scripts). The plugin doesn't use Swagger UI.
 const openApiDocument = generateOpenApiDocument();
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openApiDocument));
 app.get('/api/openapi.json', (_req, res) => {
@@ -99,17 +107,6 @@ app.get('/api/openapi.json', (_req, res) => {
 app.get('/api/asyncapi.json', (_req, res) => {
   res.json(asyncApiDocument);
 });
-
-const uiDist = path.resolve(__dirname, '../src/ui/dist');
-if (existsSync(uiDist)) {
-  app.use(express.static(uiDist));
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api/')) return next();
-    res.sendFile(path.join(uiDist, 'index.html'));
-  });
-} else {
-  logger.warn({ uiDist }, 'UI dist not found — GET / will 404 until UI is built');
-}
 
 const server = createServer(app);
 
@@ -121,7 +118,7 @@ server.listen(config.port, async () => {
       signalkDataPath: config.signalkDataPath,
       signalkVersion: config.signalkVersion,
     },
-    'signalk-backup-server listening'
+    'signalk-backup-server listening (headless)'
   );
 
   try {

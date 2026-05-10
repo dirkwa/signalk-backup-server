@@ -1,7 +1,7 @@
 import { createReadStream, createWriteStream, existsSync } from 'fs';
 import { mkdir, rm, readdir, stat, writeFile } from 'fs/promises';
 import { join } from 'path';
-import archiver from 'archiver';
+import { ZipArchive } from 'archiver';
 import { Extract } from 'unzip-stream';
 
 import { config } from '../config/index.js';
@@ -620,7 +620,7 @@ class BackupService {
 
       // Create ZIP from restored files
       const output = createWriteStream(outputPath);
-      const archive = archiver('zip', { zlib: { level: 9 } });
+      const archive = new ZipArchive({ zlib: { level: 9 } });
 
       await new Promise<void>((resolve, reject) => {
         output.on('close', resolve);
