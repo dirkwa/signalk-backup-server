@@ -1,0 +1,37 @@
+{
+  "name": "signalk-backup-ui",
+  "version": "0.1.0",
+  "description": "UI for signalk-backup-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "lint": "eslint --fix",
+    "format": "prettier --write src/"
+  },
+  "dependencies": {
+    "@fortawesome/fontawesome-svg-core": "^6.5.1",
+    "@fortawesome/free-solid-svg-icons": "^6.5.1",
+    "@fortawesome/react-fontawesome": "^3.1.1",
+    "@tanstack/react-query": "^5.90.0",
+    "bootstrap": "^5.3.3",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-bootstrap": "^2.10.10",
+    "react-router-dom": "^6.28.0",
+    "reconnecting-websocket": "^4.4.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.11.6",
+    "@babel/preset-react": "^7.10.4",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.1.2",
+    "babel-plugin-react-compiler": "^1.0.0",
+    "sass": "^1.81.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  }
+}

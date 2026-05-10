@@ -1,0 +1,15 @@
+# Build outputs
+dist/
+src/ui/dist/
+src/static/
+
+# Dependencies
+node_modules/
+src/ui/node_modules/
+
+# Generated files
+*.min.js
+*.map
+
+# Package lock files
+package-lock.json
