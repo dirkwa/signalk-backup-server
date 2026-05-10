@@ -18,17 +18,6 @@ updates:
       - dependency-name: "@types/node"
         versions: [">=23"]
 
-  # Vite/React UI bundle (separate package.json)
-  - package-ecosystem: npm
-    directory: "/src/ui"
-    schedule:
-      interval: weekly
-    groups:
-      ui-minor-and-patch:
-        update-types:
-          - minor
-          - patch
-
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

@@ -1,34 +1,18 @@
 # signalk-backup-server — Container Image
-# Multi-stage build with Wolfi (glibc) base for minimal size and security
 #
-# This image runs the headless backup engine. It is launched and managed
-# by the signalk-backup plugin via signalk-container's `ensureRunning()`.
-# The plugin sets DATA_DIR, SIGNALK_DATA_PATH, GUI_PUBLIC_URL, and
-# SIGNALK_VERSION at start. Persisted state lives at DATA_DIR.
+# Headless backup engine. Launched and managed by the signalk-backup
+# plugin via signalk-container's `ensureRunning()`. The plugin sets
+# DATA_DIR, SIGNALK_DATA_PATH, and SIGNALK_VERSION; persisted state lives
+# at DATA_DIR.
+#
+# No UI. The user-facing UI lives in the plugin's webapp (mounted by
+# SignalK at /signalk-backup/) and reaches us via the plugin's
+# reverse-proxy at /plugins/signalk-backup/api/.
 
 ARG VERSION=0.1.0
 
 # =============================================================================
-# Stage 1: Build frontend (Vite React UI)
-# =============================================================================
-FROM cgr.dev/chainguard/wolfi-base:latest AS frontend-builder
-
-ARG VERSION
-
-RUN apk add --no-cache nodejs-24 npm \
-    && rm -f /usr/lib/node_modules/npm/npmrc
-
-WORKDIR /app/ui
-
-COPY src/ui/package*.json ./
-RUN npm install
-
-COPY src/ui/ ./
-ENV VITE_APP_VERSION=${VERSION}
-RUN npm run build
-
-# =============================================================================
-# Stage 2: Build backend (TypeScript → ESM)
+# Stage 1: Build backend (TypeScript → ESM)
 # =============================================================================
 FROM cgr.dev/chainguard/wolfi-base:latest AS backend-builder
 
@@ -46,7 +30,7 @@ COPY src/ ./src/
 RUN npm exec tsc
 
 # =============================================================================
-# Stage 3: Production image
+# Stage 2: Production image
 # =============================================================================
 FROM cgr.dev/chainguard/wolfi-base:latest
 
@@ -84,7 +68,6 @@ COPY package*.json ./
 RUN npm install --omit=dev && npm cache clean --force
 
 COPY --from=backend-builder /app/dist ./dist
-COPY --from=frontend-builder /app/ui/dist ./src/ui/dist
 
 # DATA_DIR is the only path that needs to exist before start; everything
 # else (kopia repo, rclone.conf, install-id) is created on demand under it.
