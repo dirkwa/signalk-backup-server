@@ -1,37 +1,60 @@
 name: Publish container image
 
-# Triggers on tag push (vX.Y.Z). The tag drives both the version label and
-# the published image tag. We push a multi-arch manifest list so a single
-# tag (e.g. `:0.1.0` or `:latest`) resolves to the right arch automatically
-# on the puller's host. amd64 builds natively, arm64 under QEMU emulation
-# (fine for our small image — slow part is npm/tsc which is arch-independent).
+# Triggers on semver tag push (vX.Y.Z, optionally with -beta./-rc.
+# suffix). The tag drives both the version label and the published
+# image tag. We push a multi-arch manifest list so a single tag (e.g.
+# `:0.1.0` or `:latest`) resolves to the right arch automatically on
+# the puller's host. amd64 builds natively, arm64 under QEMU emulation
+# (fine for our small image — slow part is npm/tsc which is
+# arch-independent).
+#
+# Tag glob is intentionally tight ('v[0-9]*.[0-9]*.[0-9]*') so stray
+# tags like `vendor-fix` or `vnext` don't trigger a publish. Prerelease
+# suffixes still match (the glob looks at the leading digits only).
 
 on:
   push:
-    tags: ['v*']
+    tags: ["v[0-9]*.[0-9]*.[0-9]*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Image tag to publish (e.g. 0.1.0). For dispatch runs only.'
+        description: "Image tag to publish (e.g. 0.1.0). For dispatch runs only."
         required: true
         type: string
 
-permissions:
-  contents: read
-  packages: write
-  id-token: write
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/signalk-backup-server
-
 jobs:
+  # Image push runs first. The Release job below depends on it via
+  # `needs: publish` so we never tag a Release whose corresponding image
+  # didn't make it to the registry.
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: ${{ github.repository_owner }}/signalk-backup-server
     steps:
+      # Tag-push runs already match the trigger glob, but the glob is
+      # loose (allows `v01.0.0`, `v1.0.0.0`, etc.). workflow_dispatch
+      # accepts whatever the user types. Belt-and-braces: validate the
+      # resolved version against a strict semver regex before doing
+      # anything publishable.
+      - name: Validate tag is semver
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="${{ github.event.inputs.tag }}"
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Version '${VERSION}' is not valid semver X.Y.Z[-prerelease][+build]"
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
 
-      - name: Resolve version
+      - name: Resolve version + tags
         id: version
         run: |
           if [[ "${{ github.event_name }}" == "push" ]]; then
@@ -40,6 +63,20 @@ jobs:
             VERSION="${{ github.event.inputs.tag }}"
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+          # Build the image tag list. Stable releases get :VERSION + :latest;
+          # prereleases (containing -beta. or -rc.) get :VERSION only, so a
+          # `v1.2.3-rc.1` push never overwrites the stable :latest pointer.
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          {
+            echo 'tags<<EOF'
+            echo "${IMAGE}:${VERSION}"
+            if [[ "${VERSION}" != *-beta.* && "${VERSION}" != *-rc.* ]]; then
+              echo "${IMAGE}:latest"
+            fi
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
           echo "Publishing version: ${VERSION}"
 
       - uses: docker/setup-qemu-action@v3
@@ -58,9 +95,33 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          tags: ${{ steps.version.outputs.tags }}
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
           provenance: false
+
+  # GitHub Release with auto-generated notes (categorised via
+  # .github/release.yml). Tag-triggered only — workflow_dispatch
+  # publishes the image but does not create a Release (no tag context).
+  # Gated on the publish job so a failed image push won't leave a
+  # Release pointing at a missing image.
+  release:
+    needs: publish
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-beta.') || contains(github.ref_name, '-rc.') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

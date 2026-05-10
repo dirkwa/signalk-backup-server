@@ -2,8 +2,6 @@ node_modules/
 dist/
 src/ui/dist/
 src/ui/node_modules/
-package-lock.json
-src/ui/package-lock.json
 
 .idea/
 .vscode/
