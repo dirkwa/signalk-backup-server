@@ -33,8 +33,11 @@ reviews:
         - tsconfig is strict. Avoid `any`. Prefer narrowing with `unknown` +
           runtime checks at boundaries (HTTP request bodies, child-process
           stdout). TypeBox handles the route-input validation.
-        - Node `>= 22.5.0` is required. `import { promises as fs } from 'fs'`,
-          `node:` prefix for built-ins on new code, native fetch, etc.
+        - Node `>= 22.5.0` is required. The codebase convention for fs is
+          named imports from `fs/promises` (e.g. `import { readFile,
+          writeFile } from 'fs/promises'`), with `existsSync` from plain
+          `'fs'`. Native fetch is fine. Don't suggest the `node:` prefix
+          — the project deliberately doesn't use it.
 
         ## Shell-out conventions
 
