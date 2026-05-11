@@ -1,0 +1,144 @@
+language: en-US
+
+reviews:
+  profile: assertive
+  auto_review:
+    enabled: true
+    drafts: false
+  high_level_summary_instructions: |
+    Write summaries in present tense. Describe what the code does, not what
+    it did. Skip filler like "This PR" — go straight to the change.
+
+  path_instructions:
+    - path: '**/*'
+      instructions: |
+        ## Scope
+
+        Focus on files changed since `main`. Think about how changes interact
+        with the rest of the codebase, not just the diff in isolation.
+
+        signalk-backup-server is the **headless backend** of the
+        signalk-backup pair. It runs inside a container started by the
+        signalk-backup plugin. The plugin proxies `/plugins/signalk-backup/api/*`
+        through to this server. The container has **no public UI** — the UI
+        lives in the plugin's webapp at `/signalk-backup/`. Reviews should
+        respect that boundary: this repo is a JSON API + scheduler + kopia
+        wrapper, nothing more.
+
+        ## ESM / TypeScript strict / Node 22+
+
+        - `"type": "module"` — all imports use the `.js` suffix for relative
+          paths (NodeNext resolution). Reviews should not suggest dropping the
+          suffix.
+        - tsconfig is strict. Avoid `any`. Prefer narrowing with `unknown` +
+          runtime checks at boundaries (HTTP request bodies, child-process
+          stdout). TypeBox handles the route-input validation.
+        - Node `>= 22.5.0` is required. `import { promises as fs } from 'fs'`,
+          `node:` prefix for built-ins on new code, native fetch, etc.
+
+        ## Shell-out conventions
+
+        - Use `execFile` (promisified) when you control the args, never
+          `exec`. Never construct shell strings from user input — kopia and
+          rclone paths must be passed as separate argv elements.
+        - Long-running children (kopia sync, rclone authorize) go through
+          `spawn` with stderr-streamed progress parsing.
+        - Always set a `timeout` on child invocations. The defaults vary
+          (`SHORT_TIMEOUT_MS = 30s` for status/list, `SYNC_TIMEOUT_MS = 2h`
+          for sync, etc) — see `services/kopia-client.ts` for the pattern.
+        - Errors from child processes should be wrapped with `{ cause }`
+          (ESLint rule `preserve-caught-error` enforces this).
+
+        ## Secrets / credentials
+
+        - The Kopia repository password lives in `settings.json` in plaintext,
+          but the file is `mode 0o600` (see `settings-service.save()`). Any
+          new credential storage MUST follow the same pattern: explicit mode
+          on `writeFile` + a post-chmod for pre-existing files.
+        - Logger is `pino` with `redact` paths configured (see
+          `services/logger.ts` for the canonical list:
+          `backupPassword`, `password`, `confirmPassword`, and the nested
+          `*.` and `settings.*` variants). Any new code that logs settings
+          or HTTP bodies MUST use `logger.child(...)` or the root
+          `logger` — DO NOT instantiate a fresh `pino(...)` because it
+          bypasses the redact config. CodeRabbit caught this twice already
+          (PR #26).
+        - Cloud provider tokens (OAuth, SMB password, etc) live in
+          `rclone.conf` (mode 0o600). Migrations must preserve mode.
+
+        ## API conventions
+
+        - Routes return an `ApiResponse<T>` envelope (`{success, data?, error?, timestamp}`).
+          Throwing in a route handler funnels through the central error
+          handler — don't try/catch + re-respond, just throw.
+        - TypeBox schemas validate every route body. Define the schema in
+          `schemas/` and pass it via the middleware. Don't hand-parse
+          `req.body`.
+        - OpenAPI is generated from registered routes via
+          `api/openapi-registry.ts`. New routes should be registered there
+          so Swagger UI at `/api/docs` stays in sync.
+        - CORS is **loopback-only** by design (the plugin proxies through;
+          nothing external should hit this server). Don't loosen CORS
+          without justification.
+
+        ## Echo comments
+
+        Flag any comment that merely restates what the code already says.
+        Examples to flag:
+        - `// Sets the password` above `setPassword(password)`
+        - `// Iterate over snapshots` above a `for` loop
+        Replace with comments explaining *why*, not *what*. Or delete.
+
+        ## Documentation drift risk
+
+        Flag any `.md` file that contains:
+        - Specific code snippets, function signatures, or config values
+          likely to fall out of sync as code evolves.
+        - Step-by-step build/development instructions that duplicate or
+          shadow the code itself.
+        - Implementation status, progress markers ("Step 3: …"), or
+          "currently implemented as X" wording. Build narratives belong in
+          PR descriptions or commit messages, not in repo docs.
+        Architecture decisions and conceptual design rationale are fine.
+
+        ## Leftover crumbs from intermediate commits
+
+        Flag references in the current diff to symbols, files, or
+        approaches that no longer exist on this branch — old function
+        names in comments, dangling imports, stale TODOs from a superseded
+        approach, etc.
+
+        ## Unchecked items in test plans
+
+        If the PR description has a checklist with unchecked items, flag
+        it. Either the work isn't done, or the unchecked items should be
+        removed before merge.
+
+        ## Commit / PR conventions
+
+        - Commit messages: conventional commits format
+          (`feat:`, `fix:`, `chore:`, `refactor:`, `docs:`, `test:`,
+          `build:`, `ci:`, `perf:`). Imperative mood, ≤72 char subject.
+        - PR title becomes the squash commit subject — must be a meaningful
+          one-liner.
+        - **No AI attribution** in commits, PR bodies, or code. Don't
+          mention Claude, AI, or add `Co-Authored-By` trailers.
+        - **No version bumps** in feature/fix PRs. Versions are bumped in
+          dedicated `chore(release):` PRs only when the user explicitly
+          asks.
+
+        ## What NOT to flag
+
+        These are intentional:
+        - `as const` literals in default-settings helpers and
+          discriminated-union construction — they're load-bearing for
+          TypeScript narrowing.
+        - `Partial<DiscriminatedUnion>` parameter types — TypeScript can't
+          narrow these but the route layer enforces single-variant updates.
+          The `as CloudSyncSettings` cast is documented.
+        - `_` prefix on intentionally-unused exhaustiveness-check variables
+          (`const _exhaustive: never = ...`).
+        - Shell-out timeouts that look generous (2h sync timeout, 5min
+          OAuth) — they're sized for the real-world worst case on a Pi.
+        - The `rcloneClient` / `kopiaClient` singleton pattern — these are
+          per-process resources; instantiation cost matters on a Pi.
