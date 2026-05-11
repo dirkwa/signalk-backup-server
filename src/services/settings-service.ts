@@ -26,11 +26,14 @@ export const DEFAULT_KOPIA_PASSWORD = 'keeperbackup';
  * Cloud sync provider identifier. Discriminator for the
  * CloudSyncSettings union.
  *
- * Currently only `gdrive` is implemented end-to-end. Future variants
- * (`smb`, `local`, …) extend the union by adding new
- * Provider-prefixed interfaces that share `CloudSyncSettingsBase`.
+ * - `gdrive`: Google Drive via rclone (OAuth)
+ * - `local`: a path on the host (USB drive, NFS mount, anything the
+ *   user has mounted under /media or /mnt). No rclone — kopia writes
+ *   to the path directly.
+ *
+ * Future variants (`smb`, …) extend the union the same way.
  */
-export type CloudSyncProvider = 'gdrive';
+export type CloudSyncProvider = 'gdrive' | 'local';
 
 /** Fields shared by every variant of CloudSyncSettings. */
 export interface CloudSyncSettingsBase {
@@ -50,6 +53,34 @@ export interface GDriveCloudSyncSettings extends CloudSyncSettingsBase {
 }
 
 /**
+ * Local-path cloud sync configuration (USB drive, mounted folder, NFS,
+ * anything mounted on the host). The path is expressed as it appears
+ * **inside the backup-server container** — the plugin is responsible
+ * for arranging the host→container bind mount via signalk-container's
+ * `volumes` field with `ifMissing: 'skip'` policy on baseline mounts
+ * like /media and /mnt.
+ *
+ * Per the v0.3 multi-destination plan, the plugin baseline-mounts
+ * `/media → /host-media` and `/mnt → /host-mnt`. So a USB drive at
+ * host `/media/dirk/USB-SSD` is reachable inside the container as
+ * `/host-media/dirk/USB-SSD`. That's what gets stored here.
+ */
+export interface LocalCloudSyncSettings extends CloudSyncSettingsBase {
+  provider: 'local';
+  /**
+   * Container-side path where backups will be written. Always under
+   * `/host-media` or `/host-mnt`; the plugin's discovery API surfaces
+   * candidates by walking those baseline mounts.
+   */
+  containerPath: string;
+  /**
+   * Original host-side path the user picked, kept for display in the
+   * UI ("backing up to /media/dirk/USB-SSD"). Not used for I/O.
+   */
+  hostPath: string;
+}
+
+/**
  * Cloud sync configuration — discriminated on `provider`.
  *
  * Add a new variant by:
@@ -59,16 +90,16 @@ export interface GDriveCloudSyncSettings extends CloudSyncSettingsBase {
  *  3. adding it to this union,
  *  4. extending `migrateCloudSyncSettings()` below if needed.
  */
-export type CloudSyncSettings = GDriveCloudSyncSettings;
+export type CloudSyncSettings = GDriveCloudSyncSettings | LocalCloudSyncSettings;
 
 /**
  * Migrate an arbitrary loaded `cloudSync` blob into the canonical
  * discriminated-union form. Old settings.json files predate the union
  * shape — `provider` may be missing or unknown. Treat anything we
  * don't recognise as `gdrive` (the only variant that existed before
- * this refactor), preserving the rest of the shape.
+ * the refactor), preserving the rest of the shape.
  *
- * Returns null when input is null/undefined or wholly malformed.
+ * Returns undefined when input is null/undefined or wholly malformed.
  */
 export function migrateCloudSyncSettings(input: unknown): CloudSyncSettings | undefined {
   if (input === null || input === undefined) return undefined;
@@ -80,7 +111,15 @@ export function migrateCloudSyncSettings(input: unknown): CloudSyncSettings | un
     lastSync: typeof raw.lastSync === 'string' ? raw.lastSync : null,
     lastSyncError: typeof raw.lastSyncError === 'string' ? raw.lastSyncError : null,
   };
-  // Single variant for now. Future: switch on raw.provider.
+  if (raw.provider === 'local' && typeof raw.containerPath === 'string') {
+    return {
+      provider: 'local',
+      ...base,
+      containerPath: raw.containerPath,
+      hostPath: typeof raw.hostPath === 'string' ? raw.hostPath : raw.containerPath,
+    };
+  }
+  // Default: gdrive. Anything we don't recognise falls through.
   return { provider: 'gdrive', ...base };
 }
 

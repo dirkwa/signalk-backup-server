@@ -14,7 +14,7 @@
 
 import { execFile as execFileCb, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
-import { writeFile, readdir, stat } from 'fs/promises';
+import { writeFile, readFile, readdir, stat, mkdir } from 'fs/promises';
 import { connect, type Socket } from 'net';
 import { join } from 'path';
 
@@ -27,6 +27,7 @@ import {
 } from './settings-service.js';
 import { installIdentityService } from './install-identity-service.js';
 import { gdriveAuthService, RCLONE_GDRIVE_REMOTE_NAME } from './gdrive-auth-service.js';
+import { localFsService } from './local-fs-service.js';
 import { kopiaClient } from './kopia-client.js';
 import type { CloudRestorePhase, CloudRestorePrepareResult } from '../types/backup.js';
 
@@ -49,23 +50,35 @@ interface ProviderAuthStatus {
  *
  *  - `authService` — connect/disconnect/status, the gdrive-style auth flow.
  *  - `syncTarget` — how kopia is told to write to this destination.
- *    For rclone-backed providers (gdrive, smb, …) this is a remote name +
- *    path-builder + per-provider rclone flags. Future filesystem-backed
- *    providers (local/USB) will add a second `kind: 'filesystem'` variant.
+ *    Two shapes today:
+ *      - `kind: 'rclone'` for rclone-backed providers (gdrive, future smb).
+ *        kopia talks to rclone, rclone talks to the destination.
+ *      - `kind: 'filesystem'` for local/USB. kopia writes to a path
+ *        directly; no rclone in the loop.
  *
  * Resolved per-call in cloud-sync-service so settings changes flow
  * through immediately without restarting anything.
  */
+type SyncTarget =
+  | {
+      kind: 'rclone';
+      remoteName: string;
+      /** Build the full kopia/rclone path for an install's backups folder. */
+      remotePath: (folderId: string) => string;
+      /** Extra `--rclone-args=…` to pass on every kopia sync for this provider. */
+      rcloneFlags: () => string[];
+    }
+  | {
+      kind: 'filesystem';
+      /** Container-side directory under which `SignalK-Backups/{folderId}/` lives. */
+      basePath: string;
+      /** Build the full container-side path for an install's backups folder. */
+      installPath: (folderId: string) => string;
+    };
+
 interface ProviderBindings {
   authService: { getStatus(): Promise<ProviderAuthStatus> };
-  syncTarget: {
-    kind: 'rclone';
-    remoteName: string;
-    /** Build the full kopia/rclone path for an install's backups folder. */
-    remotePath: (folderId: string) => string;
-    /** Extra `--rclone-args=…` to pass on every kopia sync for this provider. */
-    rcloneFlags: () => string[];
-  };
+  syncTarget: SyncTarget;
 }
 
 /**
@@ -84,7 +97,18 @@ function defaultCloudSyncSettings(): CloudSyncSettings {
   };
 }
 
-function getProviderBindings(provider: CloudSyncProvider): ProviderBindings {
+/**
+ * Resolve provider-specific bindings from a (possibly partial) cloudSync
+ * settings blob. Variants that need extra config (local needs the
+ * container-side path) read it from the settings; variants that don't
+ * (gdrive) ignore it.
+ *
+ * Falls back to the gdrive defaults when `cloudSync` is undefined so
+ * callers can run on a fresh install before the user has configured
+ * anything.
+ */
+function getProviderBindings(cloudSync: CloudSyncSettings | undefined): ProviderBindings {
+  const provider: CloudSyncProvider = cloudSync?.provider ?? 'gdrive';
   switch (provider) {
     case 'gdrive':
       return {
@@ -98,6 +122,22 @@ function getProviderBindings(provider: CloudSyncProvider): ProviderBindings {
           rcloneFlags: () => ['--rclone-args=--drive-chunk-size=256k'],
         },
       };
+    case 'local': {
+      // The path comes from the settings; bindings can't be resolved for
+      // 'local' without it.
+      if (!cloudSync || cloudSync.provider !== 'local') {
+        throw new Error('local provider requires cloudSync.containerPath');
+      }
+      const basePath = cloudSync.containerPath;
+      return {
+        authService: localFsService,
+        syncTarget: {
+          kind: 'filesystem',
+          basePath,
+          installPath: (folderId) => `${basePath}/SignalK-Backups/${folderId}`,
+        },
+      };
+    }
     default: {
       // Exhaustiveness check so adding a new variant to CloudSyncProvider
       // surfaces here as a compile error.
@@ -176,7 +216,7 @@ class CloudSyncService {
   async getStatus(): Promise<CloudSyncStatus> {
     const settings = await settingsService.get();
     const provider = settings.cloudSync?.provider ?? 'gdrive';
-    const bindings = getProviderBindings(provider);
+    const bindings = getProviderBindings(settings.cloudSync);
     const authStatus = await bindings.authService.getStatus();
 
     return {
@@ -204,7 +244,7 @@ class CloudSyncService {
 
     const settings = await settingsService.get();
     const provider = settings.cloudSync?.provider ?? 'gdrive';
-    const bindings = getProviderBindings(provider);
+    const bindings = getProviderBindings(settings.cloudSync);
 
     try {
       const authStatus = await bindings.authService.getStatus();
@@ -212,12 +252,15 @@ class CloudSyncService {
         throw new Error(`Cloud provider not connected: ${provider}`);
       }
 
-      // Check internet connectivity
-      const online = await this.checkInternet();
-      if (!online) {
-        const error = 'No internet connection available';
-        await this.updateSyncStatus(null, error);
-        throw new Error(error);
+      // Internet connectivity is only relevant for rclone-backed targets.
+      // Local-filesystem syncs work fine offline.
+      if (bindings.syncTarget.kind === 'rclone') {
+        const online = await this.checkInternet();
+        if (!online) {
+          const error = 'No internet connection available';
+          await this.updateSyncStatus(null, error);
+          throw new Error(error);
+        }
       }
     } catch (error) {
       this.syncing = false;
@@ -231,18 +274,21 @@ class CloudSyncService {
 
     try {
       const folderId = await installIdentityService.getFolderId();
-      const remotePath = bindings.syncTarget.remotePath(folderId);
 
-      // Sync local Kopia repo to cloud via rclone
-      await this.runKopiaSync('sync-to', remotePath, undefined, bindings);
-
-      // Write install-info.json alongside the repo for human identification
-      await this.writeInstallInfo(folderId, bindings);
+      if (bindings.syncTarget.kind === 'rclone') {
+        const remotePath = bindings.syncTarget.remotePath(folderId);
+        await this.runKopiaSync('sync-to', remotePath, undefined, bindings.syncTarget);
+        await this.writeInstallInfoToRclone(folderId, bindings.syncTarget.remoteName);
+        logger.info({ remotePath, provider }, 'Cloud sync completed');
+      } else {
+        const installPath = bindings.syncTarget.installPath(folderId);
+        await this.runKopiaSyncFilesystem('sync-to', installPath);
+        await this.writeInstallInfoToFilesystem(folderId, bindings.syncTarget.basePath);
+        logger.info({ installPath, provider }, 'Local sync completed');
+      }
 
       const now = new Date().toISOString();
       await this.updateSyncStatus(now, null);
-
-      logger.info({ remotePath, provider }, 'Cloud sync completed');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await this.updateSyncStatus(null, message);
@@ -267,15 +313,17 @@ class CloudSyncService {
 
     const settings = await settingsService.get();
     const provider = settings.cloudSync?.provider ?? 'gdrive';
-    const bindings = getProviderBindings(provider);
+    const bindings = getProviderBindings(settings.cloudSync);
     const authStatus = await bindings.authService.getStatus();
     if (!authStatus.connected) {
       throw new Error(`Cloud provider not connected: ${provider}`);
     }
 
-    const online = await this.checkInternet();
-    if (!online) {
-      throw new Error('No internet connection available');
+    if (bindings.syncTarget.kind === 'rclone') {
+      const online = await this.checkInternet();
+      if (!online) {
+        throw new Error('No internet connection available');
+      }
     }
 
     this.cloudRestorePhase = 'syncing';
@@ -332,15 +380,19 @@ class CloudSyncService {
 
   async listCloudInstalls(): Promise<CloudInstall[]> {
     const settings = await settingsService.get();
-    const provider = settings.cloudSync?.provider ?? 'gdrive';
-    const bindings = getProviderBindings(provider);
+    const bindings = getProviderBindings(settings.cloudSync);
     const authStatus = await bindings.authService.getStatus();
     if (!authStatus.connected) {
       return [];
     }
 
-    const remoteName = bindings.syncTarget.remoteName;
+    if (bindings.syncTarget.kind === 'rclone') {
+      return this.listInstallsViaRclone(bindings.syncTarget.remoteName);
+    }
+    return this.listInstallsViaFilesystem(bindings.syncTarget.basePath);
+  }
 
+  private async listInstallsViaRclone(remoteName: string): Promise<CloudInstall[]> {
     try {
       const { stdout } = await execFile(
         config.rcloneBinaryPath,
@@ -387,6 +439,31 @@ class CloudSyncService {
     }
   }
 
+  private async listInstallsViaFilesystem(basePath: string): Promise<CloudInstall[]> {
+    const root = `${basePath}/SignalK-Backups`;
+    try {
+      const entries = await readdir(root, { withFileTypes: true });
+      const installs: CloudInstall[] = [];
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const install: CloudInstall = { folder: entry.name };
+        try {
+          const infoJson = await readFile(`${root}/${entry.name}/install-info.json`, 'utf-8');
+          install.info = JSON.parse(infoJson) as Record<string, unknown>;
+        } catch {
+          // No install-info.json or parse error, skip
+        }
+        installs.push(install);
+      }
+      return installs;
+    } catch (error) {
+      // ENOENT just means no backups have ever been written; return empty.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      logger.error({ error, root }, 'Failed to list local installations');
+      return [];
+    }
+  }
+
   async updateConfig(updates: Partial<CloudSyncSettings>): Promise<CloudSyncSettings> {
     const settings = await settingsService.get();
     const current: CloudSyncSettings = settings.cloudSync ?? defaultCloudSyncSettings();
@@ -415,7 +492,7 @@ class CloudSyncService {
     }
 
     const provider = settings.cloudSync.provider;
-    const bindings = getProviderBindings(provider);
+    const bindings = getProviderBindings(settings.cloudSync);
     const authStatus = await bindings.authService.getStatus();
     if (!authStatus.connected) {
       logger.debug({ provider }, 'Skipping post-backup cloud sync: provider not connected');
@@ -475,7 +552,6 @@ class CloudSyncService {
     logger.info({ folder, hasCustomPassword: !!password }, 'Connecting to cloud repository');
 
     try {
-      const remotePath = bindings.syncTarget.remotePath(folder);
       const effectivePassword = password ?? (await settingsService.getKopiaPassword());
 
       const env: Record<string, string> = {
@@ -494,21 +570,31 @@ class CloudSyncService {
         // May not be connected, ignore
       }
 
-      // Connect to the cloud repo via rclone (using the separate config).
-      // Credentials ARE persisted so subsequent kopia commands (snapshot list,
-      // snapshot restore) can start their own rclone process. The separate
+      // Connect to the destination repo using a separate kopia config so the
+      // local repo's connection isn't disturbed.  Credentials ARE persisted
+      // so subsequent kopia commands (snapshot list, snapshot restore) can
+      // start their own helper process (rclone, fs walker, …). The separate
       // config file is cleaned up on disconnect.
-      const args = [
-        'repository',
-        'connect',
-        'rclone',
-        '--remote-path',
-        remotePath,
-        '--rclone-exe',
-        config.rcloneBinaryPath,
-        '--rclone-startup-timeout=120s',
-        `--rclone-args=--config=${config.rcloneConfigPath}`,
-      ];
+      const args =
+        bindings.syncTarget.kind === 'rclone'
+          ? [
+              'repository',
+              'connect',
+              'rclone',
+              '--remote-path',
+              bindings.syncTarget.remotePath(folder),
+              '--rclone-exe',
+              config.rcloneBinaryPath,
+              '--rclone-startup-timeout=120s',
+              `--rclone-args=--config=${config.rcloneConfigPath}`,
+            ]
+          : [
+              'repository',
+              'connect',
+              'filesystem',
+              '--path',
+              bindings.syncTarget.installPath(folder),
+            ];
 
       await execFile(config.kopiaBinaryPath, args, {
         env,
@@ -518,7 +604,7 @@ class CloudSyncService {
       // Set overrides so kopia-client commands (listBackups, restoreSnapshot) use cloud repo
       kopiaClient.setCloudOverrides(CLOUD_RESTORE_CONFIG_PATH, effectivePassword);
 
-      logger.info({ folder }, 'Connected to cloud repository');
+      logger.info({ folder, kind: bindings.syncTarget.kind }, 'Connected to restore repository');
     } catch (error) {
       this.syncing = false;
       throw error;
@@ -557,7 +643,7 @@ class CloudSyncService {
     direction: 'sync-to',
     remotePath: string,
     passwordOverride: string | undefined,
-    bindings: ProviderBindings
+    target: Extract<SyncTarget, { kind: 'rclone' }>
   ): Promise<void> {
     const args = [
       'repository',
@@ -571,50 +657,63 @@ class CloudSyncService {
       `--rclone-args=--config=${config.rcloneConfigPath}`,
       '--rclone-args=--transfers=8',
       '--rclone-args=--checkers=16',
-      ...bindings.syncTarget.rcloneFlags(),
+      ...target.rcloneFlags(),
     ];
+    return this.execKopiaSync(args, passwordOverride);
+  }
 
-    const effectivePassword = passwordOverride ?? (await settingsService.getKopiaPassword());
+  private async runKopiaSyncFilesystem(direction: 'sync-to', installPath: string): Promise<void> {
+    // Ensure the parent dir exists — kopia's filesystem target writes to it
+    // without auto-creating intermediate parents.
+    await mkdir(installPath, { recursive: true });
+    const args = ['repository', direction, 'filesystem', '--path', installPath];
+    return this.execKopiaSync(args, undefined);
+  }
 
-    const env: Record<string, string> = {
-      ...(process.env as Record<string, string>),
-      KOPIA_CONFIG_PATH: config.kopiaConfigPath,
-      KOPIA_PASSWORD: effectivePassword,
-    };
+  private execKopiaSync(args: string[], passwordOverride: string | undefined): Promise<void> {
+    return (async () => {
+      const effectivePassword = passwordOverride ?? (await settingsService.getKopiaPassword());
 
-    logger.debug({ args }, 'Running kopia sync command');
+      const env: Record<string, string> = {
+        ...(process.env as Record<string, string>),
+        KOPIA_CONFIG_PATH: config.kopiaConfigPath,
+        KOPIA_PASSWORD: effectivePassword,
+      };
 
-    return new Promise<void>((resolve, reject) => {
-      const child = execFileCb(
-        config.kopiaBinaryPath,
-        args,
-        { env, timeout: SYNC_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 },
-        (error, _stdout, stderr) => {
-          this.activeSyncProcess = null;
-          if (error) {
-            if (error.killed || error.signal === 'SIGTERM') {
-              reject(new Error('Sync cancelled by user'));
-            } else {
-              reject(error);
+      logger.debug({ args }, 'Running kopia sync command');
+
+      return new Promise<void>((resolve, reject) => {
+        const child = execFileCb(
+          config.kopiaBinaryPath,
+          args,
+          { env, timeout: SYNC_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 },
+          (error, _stdout, stderr) => {
+            this.activeSyncProcess = null;
+            if (error) {
+              if (error.killed || error.signal === 'SIGTERM') {
+                reject(new Error('Sync cancelled by user'));
+              } else {
+                reject(error);
+              }
+              return;
             }
-            return;
+            if (stderr?.trim()) {
+              logger.debug({ stderr: stderr.trim() }, 'Kopia sync stderr');
+            }
+            resolve();
           }
-          if (stderr?.trim()) {
-            logger.debug({ stderr: stderr.trim() }, 'Kopia sync stderr');
-          }
-          resolve();
-        }
-      );
-      this.activeSyncProcess = child;
+        );
+        this.activeSyncProcess = child;
 
-      // Stream stderr for progress parsing
-      if (child.stderr) {
-        child.stderr.on('data', (data: Buffer) => {
-          const line = data.toString();
-          this.parseKopiaSyncProgress(line);
-        });
-      }
-    });
+        // Stream stderr for progress parsing
+        if (child.stderr) {
+          child.stderr.on('data', (data: Buffer) => {
+            const line = data.toString();
+            this.parseKopiaSyncProgress(line);
+          });
+        }
+      });
+    })();
   }
 
   /**
@@ -636,7 +735,7 @@ class CloudSyncService {
     }
   }
 
-  private async writeInstallInfo(folderId: string, bindings: ProviderBindings): Promise<void> {
+  private async writeInstallInfoToRclone(folderId: string, remoteName: string): Promise<void> {
     try {
       const info = await installIdentityService.getInstallInfo();
       const tmpPath = '/tmp/install-info.json';
@@ -649,13 +748,25 @@ class CloudSyncService {
           '--config',
           config.rcloneConfigPath,
           tmpPath,
-          `${bindings.syncTarget.remoteName}:SignalK-Backups/${folderId}/install-info.json`,
+          `${remoteName}:SignalK-Backups/${folderId}/install-info.json`,
         ],
         { timeout: 30000 }
       );
     } catch (error) {
       // Non-fatal — the backup itself is fine
       logger.warn({ error }, 'Failed to write install-info.json to cloud');
+    }
+  }
+
+  private async writeInstallInfoToFilesystem(folderId: string, basePath: string): Promise<void> {
+    try {
+      const info = await installIdentityService.getInstallInfo();
+      const dir = `${basePath}/SignalK-Backups/${folderId}`;
+      await mkdir(dir, { recursive: true });
+      await writeFile(`${dir}/install-info.json`, JSON.stringify(info, null, 2), 'utf-8');
+    } catch (error) {
+      // Non-fatal — the backup itself is fine
+      logger.warn({ error, folderId }, 'Failed to write install-info.json to filesystem');
     }
   }
 

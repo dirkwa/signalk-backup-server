@@ -13,7 +13,9 @@ import { type Request, type Response } from 'express';
 import { gdriveAuthService } from '../services/gdrive-auth-service.js';
 import { cloudSyncService } from '../services/cloud-sync-service.js';
 import { installIdentityService } from '../services/install-identity-service.js';
+import { localFsService } from '../services/local-fs-service.js';
 import { restoreService, type RestoreProgress } from '../services/restore-service.js';
+import { settingsService } from '../services/settings-service.js';
 import { logger } from '../services/logger.js';
 import { createApiRouter } from './openapi-registry.js';
 import type { ApiResponse } from '../types/api.js';
@@ -234,6 +236,210 @@ api.post(
       res.json(response);
     } catch (error) {
       logger.error({ error }, 'Failed to disconnect Google Drive');
+      const response: ApiResponse<never> = {
+        success: false,
+        error: {
+          code: 'DISCONNECT_FAILED',
+          message: error instanceof Error ? error.message : 'Disconnect failed',
+        },
+        timestamp: new Date().toISOString(),
+      };
+      res.status(500).json(response);
+    }
+  }
+);
+
+// =============================================================================
+// Local (USB / mounted folder) destination
+// =============================================================================
+
+/**
+ * GET /api/cloud/local/status
+ * Whether the configured local destination is reachable + writable.
+ */
+api.get(
+  '/local/status',
+  {
+    summary: 'Get local destination status',
+    description:
+      'Returns the configured container-side path and whether it is reachable + writable.',
+    responses: {
+      200: { description: 'Local destination status' },
+      500: { description: 'Status check failed' },
+    },
+  },
+  async (_req: Request, res: Response) => {
+    try {
+      const status = await localFsService.getStatus();
+      const response: ApiResponse<typeof status> = {
+        success: true,
+        data: status,
+        timestamp: new Date().toISOString(),
+      };
+      res.json(response);
+    } catch (error) {
+      logger.error({ error }, 'Failed to get local destination status');
+      const response: ApiResponse<never> = {
+        success: false,
+        error: {
+          code: 'STATUS_FAILED',
+          message: error instanceof Error ? error.message : 'Status check failed',
+        },
+        timestamp: new Date().toISOString(),
+      };
+      res.status(500).json(response);
+    }
+  }
+);
+
+/**
+ * GET /api/cloud/local/discover
+ * Walk baseline mounts (/host-media, /host-mnt) and return candidate
+ * destination paths annotated with size info. UI surfaces these in a
+ * dropdown so users don't have to type a path.
+ */
+api.get(
+  '/local/discover',
+  {
+    summary: 'Discover local destinations',
+    description:
+      'Lists subdirectories of /host-media and /host-mnt (the plugin baseline mounts) as candidate backup destinations.',
+    responses: {
+      200: { description: 'Discovered candidates' },
+      500: { description: 'Discovery failed' },
+    },
+  },
+  async (_req: Request, res: Response) => {
+    try {
+      const candidates = await localFsService.discover();
+      const response: ApiResponse<{ candidates: typeof candidates }> = {
+        success: true,
+        data: { candidates },
+        timestamp: new Date().toISOString(),
+      };
+      res.json(response);
+    } catch (error) {
+      logger.error({ error }, 'Failed to discover local destinations');
+      const response: ApiResponse<never> = {
+        success: false,
+        error: {
+          code: 'DISCOVER_FAILED',
+          message: error instanceof Error ? error.message : 'Discovery failed',
+        },
+        timestamp: new Date().toISOString(),
+      };
+      res.status(500).json(response);
+    }
+  }
+);
+
+/**
+ * POST /api/cloud/local/configure
+ * Set the local destination. Body: `{ containerPath, hostPath? }`.
+ * The container-side path must live under one of the baseline mounts;
+ * the host-side path is stored for display only.
+ *
+ * After persisting settings the plugin's next ensureRunning call picks
+ * up the new provider, but **no container recreate is required** — the
+ * baseline mounts are already there. Sync is immediately usable.
+ */
+api.post(
+  '/local/configure',
+  {
+    summary: 'Configure local destination',
+    description:
+      'Sets the local destination path. The container-side path must be under /host-media or /host-mnt.',
+    responses: {
+      200: { description: 'Configured' },
+      400: { description: 'Invalid path' },
+      500: { description: 'Configuration failed' },
+    },
+  },
+  async (req: Request, res: Response) => {
+    try {
+      const body = (req.body ?? {}) as { containerPath?: unknown; hostPath?: unknown };
+      const containerPath = typeof body.containerPath === 'string' ? body.containerPath : '';
+      const hostPath = typeof body.hostPath === 'string' ? body.hostPath : containerPath;
+
+      const validationError = await localFsService.validate(containerPath);
+      if (validationError) {
+        const response: ApiResponse<never> = {
+          success: false,
+          error: { code: 'INVALID_PATH', message: validationError },
+          timestamp: new Date().toISOString(),
+        };
+        res.status(400).json(response);
+        return;
+      }
+
+      const current = (await settingsService.get()).cloudSync;
+      const updated = await cloudSyncService.updateConfig({
+        provider: 'local',
+        containerPath,
+        hostPath,
+        // Preserve mode/frequency from any prior config so switching
+        // destinations doesn't reset the schedule.
+        syncMode: current?.syncMode ?? 'manual',
+        syncFrequency: current?.syncFrequency ?? 'daily',
+      });
+
+      const response: ApiResponse<typeof updated> = {
+        success: true,
+        data: updated,
+        timestamp: new Date().toISOString(),
+      };
+      res.json(response);
+    } catch (error) {
+      logger.error({ error }, 'Failed to configure local destination');
+      const response: ApiResponse<never> = {
+        success: false,
+        error: {
+          code: 'CONFIGURE_FAILED',
+          message: error instanceof Error ? error.message : 'Configure failed',
+        },
+        timestamp: new Date().toISOString(),
+      };
+      res.status(500).json(response);
+    }
+  }
+);
+
+/**
+ * POST /api/cloud/local/disconnect
+ * Clear the local destination — settings.cloudSync.provider reverts
+ * to gdrive (the default) but auth state for gdrive is untouched.
+ */
+api.post(
+  '/local/disconnect',
+  {
+    summary: 'Clear local destination',
+    description: 'Removes the local destination from settings; provider falls back to gdrive.',
+    responses: {
+      200: { description: 'Disconnected' },
+      500: { description: 'Disconnect failed' },
+    },
+  },
+  async (_req: Request, res: Response) => {
+    try {
+      // Revert to a vanilla gdrive cloudSync so the UI has a stable state.
+      const current = (await settingsService.get()).cloudSync;
+      await settingsService.update({
+        cloudSync: {
+          provider: 'gdrive',
+          syncMode: current?.syncMode ?? 'manual',
+          syncFrequency: current?.syncFrequency ?? 'daily',
+          lastSync: null,
+          lastSyncError: null,
+        },
+      });
+      const response: ApiResponse<{ disconnected: boolean }> = {
+        success: true,
+        data: { disconnected: true },
+        timestamp: new Date().toISOString(),
+      };
+      res.json(response);
+    } catch (error) {
+      logger.error({ error }, 'Failed to disconnect local destination');
       const response: ApiResponse<never> = {
         success: false,
         error: {
