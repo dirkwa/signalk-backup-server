@@ -460,7 +460,9 @@ class KopiaClient {
             { stdout: stdout.substring(0, 500), parseError },
             'Failed to parse kopia JSON output'
           );
-          throw new Error(`Failed to parse kopia output: ${(parseError as Error).message}`);
+          throw new Error(`Failed to parse kopia output: ${(parseError as Error).message}`, {
+            cause: parseError,
+          });
         }
       }
 
@@ -478,7 +480,7 @@ class KopiaClient {
         'Kopia command failed'
       );
 
-      throw new Error(`Kopia command failed: ${errorMessage}`);
+      throw new Error(`Kopia command failed: ${errorMessage}`, { cause: error });
     }
   }
 }
