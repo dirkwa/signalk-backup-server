@@ -20,11 +20,92 @@ import { join } from 'path';
 
 import { config } from '../config/index.js';
 import { logger } from './logger.js';
-import { settingsService, type CloudSyncSettings } from './settings-service.js';
+import {
+  settingsService,
+  type CloudSyncSettings,
+  type CloudSyncProvider,
+} from './settings-service.js';
 import { installIdentityService } from './install-identity-service.js';
-import { gdriveAuthService, RCLONE_REMOTE_NAME } from './gdrive-auth-service.js';
+import { gdriveAuthService, RCLONE_GDRIVE_REMOTE_NAME } from './gdrive-auth-service.js';
 import { kopiaClient } from './kopia-client.js';
 import type { CloudRestorePhase, CloudRestorePrepareResult } from '../types/backup.js';
+
+/**
+ * Provider-agnostic auth status. Each provider's auth-service must
+ * project its own status shape into this minimal contract. The
+ * `email?` field is the gdrive-style human-readable label for the
+ * connection ("foo@gmail.com"); other providers can repurpose it
+ * (e.g. `"user@host/share"` for SMB).
+ */
+interface ProviderAuthStatus {
+  connected: boolean;
+  configured: boolean;
+  /** Human-readable label for the connected destination, when known. */
+  email?: string;
+}
+
+/**
+ * Provider-specific bits needed by the sync flow:
+ *
+ *  - `authService` — connect/disconnect/status, the gdrive-style auth flow.
+ *  - `syncTarget` — how kopia is told to write to this destination.
+ *    For rclone-backed providers (gdrive, smb, …) this is a remote name +
+ *    path-builder + per-provider rclone flags. Future filesystem-backed
+ *    providers (local/USB) will add a second `kind: 'filesystem'` variant.
+ *
+ * Resolved per-call in cloud-sync-service so settings changes flow
+ * through immediately without restarting anything.
+ */
+interface ProviderBindings {
+  authService: { getStatus(): Promise<ProviderAuthStatus> };
+  syncTarget: {
+    kind: 'rclone';
+    remoteName: string;
+    /** Build the full kopia/rclone path for an install's backups folder. */
+    remotePath: (folderId: string) => string;
+    /** Extra `--rclone-args=…` to pass on every kopia sync for this provider. */
+    rcloneFlags: () => string[];
+  };
+}
+
+/**
+ * Default `cloudSync` blob for fresh installs (no settings.json yet, or
+ * cloudSync absent). Defaults to gdrive since that's been the only
+ * provider since 0.1.0 — picking a different default would silently
+ * change behaviour on upgrade.
+ */
+function defaultCloudSyncSettings(): CloudSyncSettings {
+  return {
+    provider: 'gdrive',
+    syncMode: 'manual',
+    syncFrequency: 'daily',
+    lastSync: null,
+    lastSyncError: null,
+  };
+}
+
+function getProviderBindings(provider: CloudSyncProvider): ProviderBindings {
+  switch (provider) {
+    case 'gdrive':
+      return {
+        authService: gdriveAuthService,
+        syncTarget: {
+          kind: 'rclone',
+          remoteName: RCLONE_GDRIVE_REMOTE_NAME,
+          remotePath: (folderId) => `${RCLONE_GDRIVE_REMOTE_NAME}:SignalK-Backups/${folderId}`,
+          // Drive performs better with smaller chunks for high-latency
+          // round-trips. SMB/local won't want this.
+          rcloneFlags: () => ['--rclone-args=--drive-chunk-size=256k'],
+        },
+      };
+    default: {
+      // Exhaustiveness check so adding a new variant to CloudSyncProvider
+      // surfaces here as a compile error.
+      const _exhaustive: never = provider;
+      throw new Error(`Unknown cloud sync provider: ${String(_exhaustive)}`);
+    }
+  }
+}
 
 const execFile = promisify(execFileCb);
 
@@ -50,9 +131,11 @@ interface SyncProgress {
 }
 
 interface CloudSyncStatus {
-  /** Whether Google Drive is connected */
+  /** Active cloud provider (currently only `gdrive` is implemented). */
+  provider: CloudSyncProvider;
+  /** Whether the active provider is connected. */
   connected: boolean;
-  /** Whether OAuth credentials are configured */
+  /** Whether the active provider's credentials are configured. */
   configured: boolean;
   /** Whether a sync is currently running */
   syncing: boolean;
@@ -66,7 +149,7 @@ interface CloudSyncStatus {
   lastSyncError: string | null;
   /** Whether internet is available */
   internetAvailable: boolean | null;
-  /** Google account email */
+  /** Human-readable label for the connected destination (gdrive email, etc). */
   email?: string;
   /** Progress info during active sync */
   syncProgress?: SyncProgress;
@@ -91,19 +174,22 @@ class CloudSyncService {
   private cloudRestoreError: string | null = null;
 
   async getStatus(): Promise<CloudSyncStatus> {
-    const driveStatus = await gdriveAuthService.getStatus();
     const settings = await settingsService.get();
+    const provider = settings.cloudSync?.provider ?? 'gdrive';
+    const bindings = getProviderBindings(provider);
+    const authStatus = await bindings.authService.getStatus();
 
     return {
-      connected: driveStatus.connected,
-      configured: driveStatus.configured,
+      provider,
+      connected: authStatus.connected,
+      configured: authStatus.configured,
       syncing: this.syncing,
       syncMode: settings.cloudSync?.syncMode ?? null,
       syncFrequency: settings.cloudSync?.syncFrequency ?? null,
       lastSync: settings.cloudSync?.lastSync ?? null,
       lastSyncError: settings.cloudSync?.lastSyncError ?? null,
       internetAvailable: this.internetAvailable,
-      email: driveStatus.email,
+      email: authStatus.email,
       syncProgress: this.syncProgress ?? undefined,
     };
   }
@@ -116,10 +202,14 @@ class CloudSyncService {
     // Set syncing flag immediately so status polls see it right away
     this.syncing = true;
 
+    const settings = await settingsService.get();
+    const provider = settings.cloudSync?.provider ?? 'gdrive';
+    const bindings = getProviderBindings(provider);
+
     try {
-      const driveStatus = await gdriveAuthService.getStatus();
-      if (!driveStatus.connected) {
-        throw new Error('Google Drive not connected');
+      const authStatus = await bindings.authService.getStatus();
+      if (!authStatus.connected) {
+        throw new Error(`Cloud provider not connected: ${provider}`);
       }
 
       // Check internet connectivity
@@ -137,26 +227,26 @@ class CloudSyncService {
     // Calculate repo size for progress display
     const repoSize = await this.getRepoSize();
     this.syncProgress = { totalBytes: repoSize };
-    logger.info({ repoSizeBytes: repoSize }, 'Starting cloud sync to Google Drive');
+    logger.info({ repoSizeBytes: repoSize, provider }, 'Starting cloud sync');
 
     try {
       const folderId = await installIdentityService.getFolderId();
-      const remotePath = `${RCLONE_REMOTE_NAME}:SignalK-Backups/${folderId}`;
+      const remotePath = bindings.syncTarget.remotePath(folderId);
 
       // Sync local Kopia repo to cloud via rclone
-      await this.runKopiaSync('sync-to', remotePath);
+      await this.runKopiaSync('sync-to', remotePath, undefined, bindings);
 
       // Write install-info.json alongside the repo for human identification
-      await this.writeInstallInfo(folderId);
+      await this.writeInstallInfo(folderId, bindings);
 
       const now = new Date().toISOString();
       await this.updateSyncStatus(now, null);
 
-      logger.info({ remotePath }, 'Cloud sync completed');
+      logger.info({ remotePath, provider }, 'Cloud sync completed');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await this.updateSyncStatus(null, message);
-      logger.error({ error: message }, 'Cloud sync failed');
+      logger.error({ error: message, provider }, 'Cloud sync failed');
       throw error;
     } finally {
       this.syncing = false;
@@ -175,9 +265,12 @@ class CloudSyncService {
       throw new Error('Sync already in progress');
     }
 
-    const driveStatus = await gdriveAuthService.getStatus();
-    if (!driveStatus.connected) {
-      throw new Error('Google Drive not connected');
+    const settings = await settingsService.get();
+    const provider = settings.cloudSync?.provider ?? 'gdrive';
+    const bindings = getProviderBindings(provider);
+    const authStatus = await bindings.authService.getStatus();
+    if (!authStatus.connected) {
+      throw new Error(`Cloud provider not connected: ${provider}`);
     }
 
     const online = await this.checkInternet();
@@ -190,7 +283,7 @@ class CloudSyncService {
 
     try {
       // Connect to the cloud repo so we can list its snapshots
-      await this.connectToCloudRepo(folder, password);
+      await this.connectToCloudRepo(folder, password, bindings);
 
       // List snapshots from the cloud repository
       this.cloudRestorePhase = 'listing';
@@ -238,10 +331,15 @@ class CloudSyncService {
   }
 
   async listCloudInstalls(): Promise<CloudInstall[]> {
-    const driveStatus = await gdriveAuthService.getStatus();
-    if (!driveStatus.connected) {
+    const settings = await settingsService.get();
+    const provider = settings.cloudSync?.provider ?? 'gdrive';
+    const bindings = getProviderBindings(provider);
+    const authStatus = await bindings.authService.getStatus();
+    if (!authStatus.connected) {
       return [];
     }
+
+    const remoteName = bindings.syncTarget.remoteName;
 
     try {
       const { stdout } = await execFile(
@@ -250,7 +348,7 @@ class CloudSyncService {
           'lsjson',
           '--config',
           config.rcloneConfigPath,
-          `${RCLONE_REMOTE_NAME}:SignalK-Backups/`,
+          `${remoteName}:SignalK-Backups/`,
           '--dirs-only',
         ],
         { timeout: 30000 }
@@ -270,7 +368,7 @@ class CloudSyncService {
               'cat',
               '--config',
               config.rcloneConfigPath,
-              `${RCLONE_REMOTE_NAME}:SignalK-Backups/${dir.Name}/install-info.json`,
+              `${remoteName}:SignalK-Backups/${dir.Name}/install-info.json`,
             ],
             { timeout: 15000 }
           );
@@ -291,15 +389,13 @@ class CloudSyncService {
 
   async updateConfig(updates: Partial<CloudSyncSettings>): Promise<CloudSyncSettings> {
     const settings = await settingsService.get();
-    const current = settings.cloudSync ?? {
-      provider: 'gdrive' as const,
-      syncMode: 'manual' as const,
-      syncFrequency: 'daily' as const,
-      lastSync: null,
-      lastSyncError: null,
-    };
+    const current: CloudSyncSettings = settings.cloudSync ?? defaultCloudSyncSettings();
 
-    const updated: CloudSyncSettings = { ...current, ...updates };
+    // TypeScript can't narrow `Partial<A | B>` to a single variant, so cast
+    // through the current variant — caller is responsible for staying within
+    // one provider (the routes layer never lets you switch provider+other
+    // fields in one update).
+    const updated = { ...current, ...updates } as CloudSyncSettings;
     await settingsService.update({ cloudSync: updated });
 
     // Restart schedule if mode changed
@@ -318,9 +414,11 @@ class CloudSyncService {
       return;
     }
 
-    const driveStatus = await gdriveAuthService.getStatus();
-    if (!driveStatus.connected) {
-      logger.debug('Skipping post-backup cloud sync: Google Drive not connected');
+    const provider = settings.cloudSync.provider;
+    const bindings = getProviderBindings(provider);
+    const authStatus = await bindings.authService.getStatus();
+    if (!authStatus.connected) {
+      logger.debug({ provider }, 'Skipping post-backup cloud sync: provider not connected');
       return;
     }
 
@@ -328,7 +426,7 @@ class CloudSyncService {
       await this.syncToCloud();
     } catch (error) {
       // Don't fail the backup if cloud sync fails
-      logger.warn({ error }, 'Post-backup cloud sync failed (non-fatal)');
+      logger.warn({ error, provider }, 'Post-backup cloud sync failed (non-fatal)');
     }
   }
 
@@ -364,7 +462,11 @@ class CloudSyncService {
    * The local repo connection is NOT disturbed — backups continue normally.
    * Sets kopia-client overrides so listBackups/restoreSnapshot use the cloud repo.
    */
-  private async connectToCloudRepo(folder: string, password?: string): Promise<void> {
+  private async connectToCloudRepo(
+    folder: string,
+    password: string | undefined,
+    bindings: ProviderBindings
+  ): Promise<void> {
     if (this.syncing) {
       throw new Error('Sync already in progress');
     }
@@ -373,7 +475,7 @@ class CloudSyncService {
     logger.info({ folder, hasCustomPassword: !!password }, 'Connecting to cloud repository');
 
     try {
-      const remotePath = `${RCLONE_REMOTE_NAME}:SignalK-Backups/${folder}`;
+      const remotePath = bindings.syncTarget.remotePath(folder);
       const effectivePassword = password ?? (await settingsService.getKopiaPassword());
 
       const env: Record<string, string> = {
@@ -454,7 +556,8 @@ class CloudSyncService {
   private async runKopiaSync(
     direction: 'sync-to',
     remotePath: string,
-    passwordOverride?: string
+    passwordOverride: string | undefined,
+    bindings: ProviderBindings
   ): Promise<void> {
     const args = [
       'repository',
@@ -468,7 +571,7 @@ class CloudSyncService {
       `--rclone-args=--config=${config.rcloneConfigPath}`,
       '--rclone-args=--transfers=8',
       '--rclone-args=--checkers=16',
-      '--rclone-args=--drive-chunk-size=256k',
+      ...bindings.syncTarget.rcloneFlags(),
     ];
 
     const effectivePassword = passwordOverride ?? (await settingsService.getKopiaPassword());
@@ -533,7 +636,7 @@ class CloudSyncService {
     }
   }
 
-  private async writeInstallInfo(folderId: string): Promise<void> {
+  private async writeInstallInfo(folderId: string, bindings: ProviderBindings): Promise<void> {
     try {
       const info = await installIdentityService.getInstallInfo();
       const tmpPath = '/tmp/install-info.json';
@@ -546,7 +649,7 @@ class CloudSyncService {
           '--config',
           config.rcloneConfigPath,
           tmpPath,
-          `${RCLONE_REMOTE_NAME}:SignalK-Backups/${folderId}/install-info.json`,
+          `${bindings.syncTarget.remoteName}:SignalK-Backups/${folderId}/install-info.json`,
         ],
         { timeout: 30000 }
       );
@@ -608,13 +711,7 @@ class CloudSyncService {
     lastSyncError: string | null
   ): Promise<void> {
     const settings = await settingsService.get();
-    const cloudSync = settings.cloudSync ?? {
-      provider: 'gdrive' as const,
-      syncMode: 'manual' as const,
-      syncFrequency: 'daily' as const,
-      lastSync: null,
-      lastSyncError: null,
-    };
+    const cloudSync: CloudSyncSettings = settings.cloudSync ?? defaultCloudSyncSettings();
 
     if (lastSync !== null) {
       cloudSync.lastSync = lastSync;

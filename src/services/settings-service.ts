@@ -22,10 +22,18 @@ const logger = rootLogger.child({ name: 'settings-service' });
 /** Default Kopia repository password (Kopia always requires a password) */
 export const DEFAULT_KOPIA_PASSWORD = 'keeperbackup';
 
-/** Cloud sync configuration */
-export interface CloudSyncSettings {
-  /** Cloud storage provider */
-  provider: 'gdrive';
+/**
+ * Cloud sync provider identifier. Discriminator for the
+ * CloudSyncSettings union.
+ *
+ * Currently only `gdrive` is implemented end-to-end. Future variants
+ * (`smb`, `local`, …) extend the union by adding new
+ * Provider-prefixed interfaces that share `CloudSyncSettingsBase`.
+ */
+export type CloudSyncProvider = 'gdrive';
+
+/** Fields shared by every variant of CloudSyncSettings. */
+export interface CloudSyncSettingsBase {
   /** When to sync: manual, after each local backup, or on a schedule */
   syncMode: 'manual' | 'after_backup' | 'scheduled';
   /** Frequency for scheduled sync mode */
@@ -34,6 +42,46 @@ export interface CloudSyncSettings {
   lastSync: string | null;
   /** Error message from last sync attempt, null if last sync succeeded */
   lastSyncError: string | null;
+}
+
+/** Google Drive cloud sync configuration. */
+export interface GDriveCloudSyncSettings extends CloudSyncSettingsBase {
+  provider: 'gdrive';
+}
+
+/**
+ * Cloud sync configuration — discriminated on `provider`.
+ *
+ * Add a new variant by:
+ *  1. extending CloudSyncProvider with the new id,
+ *  2. adding an interface `XxxCloudSyncSettings extends CloudSyncSettingsBase`
+ *     with `provider: 'xxx'` and any variant-specific fields,
+ *  3. adding it to this union,
+ *  4. extending `migrateCloudSyncSettings()` below if needed.
+ */
+export type CloudSyncSettings = GDriveCloudSyncSettings;
+
+/**
+ * Migrate an arbitrary loaded `cloudSync` blob into the canonical
+ * discriminated-union form. Old settings.json files predate the union
+ * shape — `provider` may be missing or unknown. Treat anything we
+ * don't recognise as `gdrive` (the only variant that existed before
+ * this refactor), preserving the rest of the shape.
+ *
+ * Returns null when input is null/undefined or wholly malformed.
+ */
+export function migrateCloudSyncSettings(input: unknown): CloudSyncSettings | undefined {
+  if (input === null || input === undefined) return undefined;
+  if (typeof input !== 'object') return undefined;
+  const raw = input as Record<string, unknown>;
+  const base: CloudSyncSettingsBase = {
+    syncMode: (raw.syncMode as CloudSyncSettingsBase['syncMode']) ?? 'manual',
+    syncFrequency: (raw.syncFrequency as CloudSyncSettingsBase['syncFrequency']) ?? 'daily',
+    lastSync: typeof raw.lastSync === 'string' ? raw.lastSync : null,
+    lastSyncError: typeof raw.lastSyncError === 'string' ? raw.lastSyncError : null,
+  };
+  // Single variant for now. Future: switch on raw.provider.
+  return { provider: 'gdrive', ...base };
 }
 
 /** Installation identity for cloud backup folder naming */
@@ -108,6 +156,14 @@ export class SettingsService {
         ...DEFAULT_SETTINGS,
         ...loaded,
       } as BackupServerSettings;
+
+      // Migration: normalise cloudSync into the discriminated-union shape.
+      // Old settings.json files have `provider: 'gdrive'` already, but the
+      // migration helper also tolerates missing/unknown provider values.
+      if (this.settings.cloudSync !== undefined) {
+        const migrated = migrateCloudSyncSettings(this.settings.cloudSync);
+        this.settings.cloudSync = migrated;
+      }
 
       // Migration: convert old encryption.password to backupPassword
       const legacy = (loaded as Record<string, unknown>).encryption as
