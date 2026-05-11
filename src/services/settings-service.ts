@@ -124,7 +124,7 @@ export class SettingsService {
         logger.info('Removed legacy encryption config');
       }
 
-      logger.info({ settings: this.settings }, 'Settings loaded');
+      logger.info('Settings loaded');
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         // File doesn't exist, use defaults
@@ -152,8 +152,21 @@ export class SettingsService {
     try {
       // Ensure directory exists
       await fs.mkdir(path.dirname(this.settingsPath), { recursive: true });
-      await fs.writeFile(this.settingsPath, JSON.stringify(this.settings, null, 2));
-      logger.info({ settings: this.settings }, 'Settings saved');
+      // The file contains the kopia repository password in plaintext.
+      // mode 0o600 = read/write owner only. writeFile's `mode` option
+      // only applies on CREATE, so we also chmod afterwards to fix any
+      // existing file that pre-dates this change.
+      await fs.writeFile(this.settingsPath, JSON.stringify(this.settings, null, 2), {
+        mode: 0o600,
+      });
+      try {
+        await fs.chmod(this.settingsPath, 0o600);
+      } catch (chmodErr) {
+        // chmod can fail on filesystems that don't support unix perms
+        // (e.g. SMB-mounted dest); not worth aborting the whole save.
+        logger.warn({ err: chmodErr }, 'Could not chmod settings.json to 0o600');
+      }
+      logger.info('Settings saved');
     } catch (error) {
       logger.error({ error }, 'Failed to save settings');
       throw error;
