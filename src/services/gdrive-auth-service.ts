@@ -29,7 +29,19 @@ import { existsSync } from 'fs';
 import { config } from '../config/index.js';
 import { logger } from './logger.js';
 
-export const RCLONE_REMOTE_NAME = 'gdrive';
+/**
+ * Name of the `[gdrive]` section in rclone.conf. Used by both this
+ * service (when reading/writing the OAuth token) and by cloud-sync-service
+ * (when building rclone paths like `gdrive:SignalK-Backups/{folderId}`).
+ */
+export const RCLONE_GDRIVE_REMOTE_NAME = 'gdrive';
+
+/**
+ * @deprecated Use `RCLONE_GDRIVE_REMOTE_NAME` directly, or — preferably —
+ * read it from `getProviderBindings(provider).syncTarget` so the call site
+ * doesn't have to know which provider it's talking to.
+ */
+export const RCLONE_REMOTE_NAME = RCLONE_GDRIVE_REMOTE_NAME;
 
 const GOOGLE_USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo';
 
@@ -233,7 +245,7 @@ class GDriveAuthService {
 
     try {
       const configContent = await readFile(configPath, 'utf-8');
-      if (!configContent.includes(`[${RCLONE_REMOTE_NAME}]`)) {
+      if (!configContent.includes(`[${RCLONE_GDRIVE_REMOTE_NAME}]`)) {
         return { connected: false, configured: true };
       }
 
@@ -351,7 +363,7 @@ class GDriveAuthService {
    */
   private async writeRcloneConfig(tokenJson: string): Promise<void> {
     const iniContent = [
-      `[${RCLONE_REMOTE_NAME}]`,
+      `[${RCLONE_GDRIVE_REMOTE_NAME}]`,
       'type = drive',
       'scope = drive.file',
       `token = ${tokenJson}`,
