@@ -11,9 +11,8 @@
  * candidate is annotated with size info from `statfs`.
  */
 
-import { stat, readdir, statfs } from 'fs/promises';
+import { access, readdir, stat, statfs } from 'fs/promises';
 import { constants as fsConstants } from 'fs';
-import { access } from 'fs/promises';
 
 import { logger as rootLogger } from './logger.js';
 import { settingsService } from './settings-service.js';
@@ -130,7 +129,7 @@ class LocalFsService {
     const candidates: LocalCandidate[] = [];
 
     for (const baseline of LOCAL_BASELINE_MOUNTS) {
-      let entries: import('node:fs').Dirent[];
+      let entries: import('fs').Dirent[];
       try {
         entries = await readdir(baseline.container, { withFileTypes: true });
       } catch (err) {
