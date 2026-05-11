@@ -11,11 +11,13 @@
 
 import { promises as fs } from 'fs';
 import path from 'path';
-import pino from 'pino';
 
 import { config } from '../config/index.js';
+import { logger as rootLogger } from './logger.js';
 
-const logger = pino({ name: 'settings-service' });
+// Child of the shared logger so the redact config (backupPassword,
+// password, etc.) applies here too.
+const logger = rootLogger.child({ name: 'settings-service' });
 
 /** Default Kopia repository password (Kopia always requires a password) */
 export const DEFAULT_KOPIA_PASSWORD = 'keeperbackup';
@@ -152,18 +154,14 @@ export class SettingsService {
     try {
       // Ensure directory exists
       await fs.mkdir(path.dirname(this.settingsPath), { recursive: true });
-      // The file contains the kopia repository password in plaintext.
-      // mode 0o600 = read/write owner only. writeFile's `mode` option
-      // only applies on CREATE, so we also chmod afterwards to fix any
-      // existing file that pre-dates this change.
+      // 0o600 = owner-only; file contains the kopia repo password in plaintext.
       await fs.writeFile(this.settingsPath, JSON.stringify(this.settings, null, 2), {
         mode: 0o600,
       });
+      // writeFile's `mode` only applies on CREATE — chmod fixes pre-existing files.
       try {
         await fs.chmod(this.settingsPath, 0o600);
       } catch (chmodErr) {
-        // chmod can fail on filesystems that don't support unix perms
-        // (e.g. SMB-mounted dest); not worth aborting the whole save.
         logger.warn({ err: chmodErr }, 'Could not chmod settings.json to 0o600');
       }
       logger.info('Settings saved');

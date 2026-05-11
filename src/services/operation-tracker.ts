@@ -5,9 +5,9 @@
  * so that the UI can reconnect to them after navigation or page refresh.
  */
 
-import pino from 'pino';
+import { logger as rootLogger } from './logger.js';
 
-const logger = pino({ name: 'operation-tracker' });
+const logger = rootLogger.child({ name: 'operation-tracker' });
 
 /** Types of operations that can be tracked */
 export type OperationType = 'pull' | 'switch';
