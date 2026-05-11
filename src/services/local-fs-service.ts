@@ -1,33 +1,18 @@
-/**
- * Local-filesystem cloud-sync provider.
- *
- * No auth flow — the destination is a host directory. The "connected"
- * predicate just checks that the configured container-side path is
- * statable, writable, and looks like a real disk (not the container's
- * own overlay).
- *
- * Discovery walks the baseline mounts (`/host-media`, `/host-mnt`) the
- * plugin is expected to bind from the host's `/media` and `/mnt`. Each
- * candidate is annotated with size info from `statfs`.
- */
+// Cloud-sync provider for paths the plugin has bind-mounted from the host
+// — no rclone, kopia writes to the path directly.
 
-import { access, readdir, stat, statfs } from 'fs/promises';
+import { access, readdir, realpath, stat, statfs } from 'fs/promises';
 import { constants as fsConstants } from 'fs';
+import { relative, resolve } from 'path';
 
 import { logger as rootLogger } from './logger.js';
 import { settingsService } from './settings-service.js';
 
 const logger = rootLogger.child({ name: 'local-fs-service' });
 
-/**
- * Baseline mounts the plugin is expected to bind from the host.
- * - host:/media → container:/host-media (auto-mount USB on most distros)
- * - host:/mnt   → container:/host-mnt   (manual NFS/CIFS/etc.)
- *
- * Each is bound with `ifMissing: 'skip'` (see signalk-container 1.6
- * `VolumeSpec`) so the container starts even on hosts that don't have
- * /media or /mnt.
- */
+// Mirrors the buildContainerConfig volumes in signalk-backup. Both binds
+// declare `ifMissing: 'skip'` so the container starts on hosts without
+// /media or /mnt — the discovery list is just empty in that case.
 export const LOCAL_BASELINE_MOUNTS: ReadonlyArray<{ container: string; host: string }> = [
   { container: '/host-media', host: '/media' },
   { container: '/host-mnt', host: '/mnt' },
@@ -62,11 +47,8 @@ export interface LocalStatus {
 }
 
 class LocalFsService {
-  /**
-   * Bindings-compatible signature: mirrors gdriveAuthService.getStatus()'s
-   * shape so cloud-sync-service can use either through the
-   * ProviderBindings.authService contract.
-   */
+  // Shape mirrors gdriveAuthService.getStatus() so both fit the
+  // ProviderBindings.authService contract in cloud-sync-service.
   async getStatus(): Promise<LocalStatus> {
     const settings = await settingsService.get();
     if (settings.cloudSync?.provider !== 'local') {
@@ -116,15 +98,6 @@ class LocalFsService {
     }
   }
 
-  /**
-   * Walk the baseline mounts and return one candidate per subdirectory.
-   * Candidates have free/total bytes populated when statfs succeeds. The
-   * UI shows these in a dropdown so users don't have to type a path.
-   *
-   * Mounts whose container-side path doesn't exist (because the host
-   * didn't have /media or /mnt and signalk-container's `ifMissing: 'skip'`
-   * dropped the bind) are silently omitted.
-   */
   async discover(): Promise<LocalCandidate[]> {
     const candidates: LocalCandidate[] = [];
 
@@ -174,32 +147,52 @@ class LocalFsService {
     return candidates;
   }
 
-  /**
-   * Validate a candidate path before persisting it to settings.
-   * Returns null on success or an error string on failure.
-   */
+  // Returns null on success or an error string on failure. Containment
+  // is checked on the realpath-resolved forms because a symlink under a
+  // baseline mount could otherwise smuggle the destination anywhere on
+  // the container's filesystem (e.g. `ln -s /etc /host-media/sneaky`).
   async validate(containerPath: string): Promise<string | null> {
     if (typeof containerPath !== 'string' || containerPath.trim() === '') {
       return 'containerPath must be a non-empty string';
     }
-    // Container-side paths must live under the baseline mounts so signalk-container
-    // doesn't have to know about ad-hoc binds. The plugin can extend this list
-    // in future versions if we add more baseline mounts.
-    const allowed = LOCAL_BASELINE_MOUNTS.some(
-      (b) => containerPath === b.container || containerPath.startsWith(b.container + '/')
-    );
-    if (!allowed) {
-      const roots = LOCAL_BASELINE_MOUNTS.map((b) => b.container).join(' or ');
-      return `containerPath must be under one of: ${roots}`;
-    }
+
+    let resolvedPath: string;
     try {
-      const st = await stat(containerPath);
-      if (!st.isDirectory()) return 'path is not a directory';
-      await access(containerPath, fsConstants.W_OK);
-      return null;
+      resolvedPath = await realpath(resolve(containerPath));
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === 'ENOENT') return 'path does not exist';
+      return (err as Error).message;
+    }
+
+    let containedUnder: string | null = null;
+    for (const b of LOCAL_BASELINE_MOUNTS) {
+      let resolvedBase: string;
+      try {
+        resolvedBase = await realpath(b.container);
+      } catch {
+        // Baseline missing on this host — skip; ifMissing:'skip' on the
+        // bind means it's a normal case, just no candidate root here.
+        continue;
+      }
+      const rel = relative(resolvedBase, resolvedPath);
+      if (rel === '' || (!rel.startsWith('..') && !rel.startsWith('/'))) {
+        containedUnder = resolvedBase;
+        break;
+      }
+    }
+    if (!containedUnder) {
+      const roots = LOCAL_BASELINE_MOUNTS.map((b) => b.container).join(' or ');
+      return `containerPath must resolve under one of: ${roots}`;
+    }
+
+    try {
+      const st = await stat(resolvedPath);
+      if (!st.isDirectory()) return 'path is not a directory';
+      await access(resolvedPath, fsConstants.W_OK);
+      return null;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
       if (code === 'EACCES') return 'path is not writable';
       return (err as Error).message;
     }
