@@ -1,6 +1,7 @@
-// rclone.conf stores SMB creds in clear text — matches `rclone config`'s
-// default behaviour. UI surfaces the trade-off; we don't try to be cleverer
-// than rclone itself.
+// SMB passwords are run through `rclone obscure` before being written to
+// rclone.conf (rclone rejects plaintext `pass = …`). The obfuscation is
+// reversible by anyone with read access to the container — the UI surfaces
+// that trade-off. user/password may be empty for guest/anonymous shares.
 
 import { execFile as execFileCb } from 'child_process';
 import { promisify } from 'util';
@@ -141,9 +142,15 @@ class SmbAuthService {
     // INI-injection guard — newline in any field could open a fake
     // section and inject arbitrary rclone config; `[` / `]` could open
     // a fresh section header on the same line. Reject these eagerly.
+    // user/password are optional (guest/anonymous shares) so only
+    // validate them when provided.
     assertIniSafe('host', opts.host, 'no-whitespace');
-    assertIniSafe('user', opts.user, 'no-newline-or-bracket');
-    assertIniSafe('password', opts.password, 'no-newline-or-bracket');
+    if (opts.user) {
+      assertIniSafe('user', opts.user, 'no-newline-or-bracket');
+    }
+    if (opts.password) {
+      assertIniSafe('password', opts.password, 'no-newline-or-bracket');
+    }
     if (opts.domain !== undefined && opts.domain !== '') {
       assertIniSafe('domain', opts.domain, 'no-whitespace');
     }
