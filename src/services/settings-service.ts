@@ -191,10 +191,20 @@ export interface BackupServerSettings {
   backupExclusions?: string[];
   /** Include InfluxDB/Grafana history data in backups (deferred to v2 — flag preserved for compat) */
   includeHistoryInBackups?: boolean;
+  /** Per-tier retention limits. Falls back to DEFAULT_RETENTION when absent. */
+  retention?: RetentionSettings;
   /** Cloud sync configuration (set when Google Drive is connected) */
   cloudSync?: CloudSyncSettings;
   /** Installation identity (computed on first cloud backup setup) */
   identity?: InstallIdentitySettings;
+}
+
+// Kept separate from kopia's RetentionConfig so settings-service stays decoupled.
+export interface RetentionSettings {
+  hourly: number;
+  daily: number;
+  weekly: number;
+  startup: number;
 }
 
 /**

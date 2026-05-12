@@ -31,8 +31,11 @@ import {
   backupIdParamSchema,
   estimateQuerySchema,
   changePasswordSchema,
+  retentionSchema,
+  type RetentionInput,
 } from '../schemas/index.js';
 import type { ApiResponse } from '../types/api.js';
+import { DEFAULT_RETENTION } from '../types/backup.js';
 import type {
   BackupMetadata,
   BackupRequest,
@@ -43,6 +46,7 @@ import type {
   BackupSizeEstimate,
   UploadResult,
   RepositoryStats,
+  RetentionConfig,
 } from '../types/backup.js';
 
 const api = createApiRouter('Backups');
@@ -400,6 +404,96 @@ api.post(
           code: 'SCHEDULER_STOP_ERROR',
           message: (error as Error).message,
         },
+        timestamp: new Date().toISOString(),
+      };
+      res.status(500).json(response);
+    }
+  }
+);
+
+/**
+ * GET /api/backups/retention
+ * Returns the active retention policy. Falls back to DEFAULT_RETENTION
+ * for any field the user hasn't customised.
+ */
+api.get(
+  '/retention',
+  {
+    summary: 'Get retention policy',
+    description:
+      'Returns the per-tier retention limits currently in effect. Manual backups are intentionally absent — they are never auto-pruned.',
+    responses: {
+      200: { description: 'Active retention policy' },
+      500: { description: 'Failed to read settings' },
+    },
+  },
+  async (_req: Request, res: Response) => {
+    try {
+      const settings = await settingsService.get();
+      const r = settings.retention;
+      const effective: RetentionConfig = {
+        hourly: r?.hourly ?? DEFAULT_RETENTION.hourly,
+        daily: r?.daily ?? DEFAULT_RETENTION.daily,
+        weekly: r?.weekly ?? DEFAULT_RETENTION.weekly,
+        startup: r?.startup ?? DEFAULT_RETENTION.startup,
+      };
+      const response: ApiResponse<RetentionConfig> = {
+        success: true,
+        data: effective,
+        timestamp: new Date().toISOString(),
+      };
+      res.json(response);
+    } catch (error) {
+      logger.error({ error }, 'Failed to read retention settings');
+      const response: ApiResponse<null> = {
+        success: false,
+        error: { code: 'RETENTION_READ_ERROR', message: (error as Error).message },
+        timestamp: new Date().toISOString(),
+      };
+      res.status(500).json(response);
+    }
+  }
+);
+
+/**
+ * PUT /api/backups/retention
+ * Updates one or more tier limits. Partial updates allowed.
+ */
+api.put(
+  '/retention',
+  {
+    summary: 'Update retention policy',
+    description:
+      'Updates per-tier retention limits. Partial body allowed — omitted tiers keep their current value. Manual backups intentionally absent.',
+    body: retentionSchema,
+    responses: {
+      200: { description: 'Retention policy updated' },
+      400: { description: 'Invalid body' },
+      500: { description: 'Failed to persist' },
+    },
+  },
+  async (req: Request, res: Response) => {
+    try {
+      const body = req.body as RetentionInput;
+      const current = (await settingsService.get()).retention;
+      const next = {
+        hourly: body.hourly ?? current?.hourly ?? DEFAULT_RETENTION.hourly,
+        daily: body.daily ?? current?.daily ?? DEFAULT_RETENTION.daily,
+        weekly: body.weekly ?? current?.weekly ?? DEFAULT_RETENTION.weekly,
+        startup: body.startup ?? current?.startup ?? DEFAULT_RETENTION.startup,
+      };
+      await settingsService.setSetting('retention', next);
+      const response: ApiResponse<RetentionConfig> = {
+        success: true,
+        data: next,
+        timestamp: new Date().toISOString(),
+      };
+      res.json(response);
+    } catch (error) {
+      logger.error({ error }, 'Failed to update retention settings');
+      const response: ApiResponse<null> = {
+        success: false,
+        error: { code: 'RETENTION_WRITE_ERROR', message: (error as Error).message },
         timestamp: new Date().toISOString(),
       };
       res.status(500).json(response);

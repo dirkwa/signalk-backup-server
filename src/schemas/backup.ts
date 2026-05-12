@@ -148,9 +148,29 @@ export const changePasswordSchema = Type.Object(
   }
 );
 
+// Min 1 keeps at least one of each tier for emergency rollback; max 365
+// stops accidental keep-forever typos. Tiers optional so the UI can
+// PUT a partial body without re-sending unchanged values.
+const retentionCount = Type.Integer({ minimum: 1, maximum: 365 });
+export const retentionSchema = Type.Object(
+  {
+    hourly: Type.Optional(retentionCount),
+    daily: Type.Optional(retentionCount),
+    weekly: Type.Optional(retentionCount),
+    startup: Type.Optional(retentionCount),
+  },
+  {
+    $id: 'RetentionRequest',
+    description:
+      'How many of each tier to keep. Manual backups are intentionally not in here — they are never auto-pruned.',
+    additionalProperties: false,
+  }
+);
+
 /** Inferred types for use in route handlers */
 export type CreateBackupInput = Static<typeof createBackupSchema>;
 export type BackupIdParam = Static<typeof backupIdParamSchema>;
 export type UploadQuery = Static<typeof uploadQuerySchema>;
 export type EstimateQuery = Static<typeof estimateQuerySchema>;
 export type ChangePasswordInput = Static<typeof changePasswordSchema>;
+export type RetentionInput = Static<typeof retentionSchema>;
