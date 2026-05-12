@@ -489,9 +489,6 @@ class BackupService {
     };
   }
 
-  /**
-   * Get Kopia repository statistics (dedup, compression, etc.)
-   */
   async getRepositoryStats(): Promise<RepositoryStats> {
     await this.ensureInitialized();
 
@@ -501,12 +498,15 @@ class BackupService {
       const backups = snapshots.map(snapshotToMetadata);
 
       const originalSize = backups.reduce((sum, b) => sum + b.size, 0);
+      const totalSize = await this.getDirectorySize(config.kopiaRepoPath);
+      // Clamp: filesystem metadata can briefly exceed logical size on a first tiny snapshot.
+      const dedupSavings = Math.max(0, originalSize - totalSize);
 
       return {
-        totalSize: 0, // Will be populated from repo status when available
+        totalSize,
         originalSize,
         snapshotCount: backups.length,
-        dedupSavings: 0,
+        dedupSavings,
         compressionRatio: 0,
         status: status.status ?? 'connected',
       };
