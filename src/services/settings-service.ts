@@ -199,8 +199,7 @@ export interface BackupServerSettings {
   identity?: InstallIdentitySettings;
 }
 
-// Separate from RetentionConfig in types/backup.ts so settings-service
-// stays decoupled from the kopia types.
+// Kept separate from kopia's RetentionConfig so settings-service stays decoupled.
 export interface RetentionSettings {
   hourly: number;
   daily: number;
