@@ -1,7 +1,4 @@
-// SMB passwords are run through `rclone obscure` before being written to
-// rclone.conf (rclone rejects plaintext `pass = …`). The obfuscation is
-// reversible by anyone with read access to the container — the UI surfaces
-// that trade-off. user/password may be empty for guest/anonymous shares.
+// WHY: rclone-obscure makes passwords reversible; UI surfaces trade-off; user/password may be empty for guest shares
 
 import { execFile as execFileCb } from 'child_process';
 import { promisify } from 'util';
@@ -160,8 +157,9 @@ class SmbAuthService {
     // `rclone config` would have written.
     let obscured = '';
     if (opts.password) {
-      const { stdout } = await execFile(config.rcloneBinaryPath, ['obscure', opts.password], {
+      const { stdout } = await execFile(config.rcloneBinaryPath, ['obscure', '-'], {
         timeout: OBSCURE_TIMEOUT_MS,
+        input: opts.password + '\n',
       });
       obscured = stdout.trim();
     }
