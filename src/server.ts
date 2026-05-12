@@ -35,6 +35,7 @@ import { operationRouter } from './api/operation-routes.js';
 
 import { backupScheduler } from './services/backup-scheduler.js';
 import { cloudSyncService } from './services/cloud-sync-service.js';
+import { settingsService } from './services/settings-service.js';
 
 import { setRoutePrefixByTag, generateOpenApiDocument } from './api/openapi-registry.js';
 import { asyncApiDocument } from './api/asyncapi.js';
@@ -127,12 +128,34 @@ server.listen(config.port, async () => {
     logger.error({ err }, 'Failed to ensure dataDir');
   }
 
+  // Restore the persisted scheduler state. backupsEnabled defaults to
+  // true on a fresh install (DEFAULT_SETTINGS in settings-service);
+  // explicit-disable is preserved across restarts. cloudSyncService
+  // reads its own schedule mode from settings.cloudSync.
   try {
-    if (backupScheduler.isEnabled()) {
-      await backupScheduler.triggerStartup();
+    const settings = await settingsService.get();
+    if (settings.backupsEnabled !== false) {
+      await backupScheduler.start();
+      try {
+        await backupScheduler.triggerStartup();
+      } catch (err) {
+        logger.error({ err }, 'Failed to trigger startup backup');
+      }
+    } else {
+      logger.info('Backup scheduler not started — backupsEnabled=false in settings');
     }
   } catch (err) {
-    logger.error({ err }, 'Failed to trigger startup backup');
+    logger.error({ err }, 'Failed to restore backup scheduler state on startup');
+  }
+
+  // Cloud sync schedule is independent — a failure to read settings or
+  // start its interval shouldn't suppress the backup scheduler error
+  // above (or vice versa). Separate try/catch so each failure is
+  // logged distinctly.
+  try {
+    await cloudSyncService.startSchedule();
+  } catch (err) {
+    logger.error({ err }, 'Failed to start cloud sync schedule on startup');
   }
 });
 
