@@ -148,15 +148,9 @@ export const changePasswordSchema = Type.Object(
   }
 );
 
-/**
- * Schema for PUT /api/backups/retention.
- *
- * Each tier is optional so the UI can do partial updates (e.g. just
- * change `daily` without re-sending the others). Sane bounds: at least
- * 1 per tier (0 would auto-delete every backup of that type immediately
- * — keep at least one for emergency rollback). Upper bound 365 to stop
- * accidental keep-forever typos.
- */
+// Min 1 keeps at least one of each tier for emergency rollback; max 365
+// stops accidental keep-forever typos. Tiers optional so the UI can
+// PUT a partial body without re-sending unchanged values.
 const retentionCount = Type.Integer({ minimum: 1, maximum: 365 });
 export const retentionSchema = Type.Object(
   {
