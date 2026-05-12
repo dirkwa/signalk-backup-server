@@ -26,6 +26,8 @@ export const RCLONE_SMB_REMOTE_NAME = 'smb';
 // hang the connect form.
 const TEST_TIMEOUT_MS = 5000;
 
+const OBSCURE_TIMEOUT_MS = 2000;
+
 export interface SmbConnectInput {
   host: string;
   share: string;
@@ -63,7 +65,7 @@ class SmbAuthService {
       host,
       share,
       user,
-      email: `${user}@${host}/${share}`,
+      email: user ? `${user}@${host}/${share}` : `${host}/${share}`,
     };
   }
 
@@ -72,8 +74,9 @@ class SmbAuthService {
   // removed so we never leave a partially-saved state.
   async connect(input: SmbConnectInput): Promise<void> {
     const { host, share, user, password, domain } = input;
-    if (!host || !share || !user) {
-      throw new Error('host, share, and user are required');
+    // user/password optional: SMB shares can allow guest/anonymous access.
+    if (!host || !share) {
+      throw new Error('host and share are required');
     }
 
     await this.writeRcloneSmbBlock({ host, user, password, domain });
@@ -145,14 +148,25 @@ class SmbAuthService {
       assertIniSafe('domain', opts.domain, 'no-whitespace');
     }
 
+    // rclone refuses plaintext `pass = …` ("input too short when revealing
+    // password"). Run it through `rclone obscure` so it matches what
+    // `rclone config` would have written.
+    let obscured = '';
+    if (opts.password) {
+      const { stdout } = await execFile(config.rcloneBinaryPath, ['obscure', opts.password], {
+        timeout: OBSCURE_TIMEOUT_MS,
+      });
+      obscured = stdout.trim();
+    }
+
     const existing = (await this.readRcloneConfigSafely()) ?? '';
     const stripped = stripSection(existing, RCLONE_SMB_REMOTE_NAME);
     const block = [
       `[${RCLONE_SMB_REMOTE_NAME}]`,
       'type = smb',
       `host = ${opts.host}`,
-      `user = ${opts.user}`,
-      `pass = ${opts.password}`,
+      ...(opts.user ? [`user = ${opts.user}`] : []),
+      ...(obscured ? [`pass = ${obscured}`] : []),
       ...(opts.domain ? [`domain = ${opts.domain}`] : []),
       '',
     ].join('\n');

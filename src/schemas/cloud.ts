@@ -24,13 +24,12 @@ export const smbConnectSchema = Type.Object(
       examples: ['backups'],
     }),
     user: Type.String({
-      minLength: 1,
       maxLength: 255,
-      description: 'SMB username',
+      description: 'SMB username (empty for guest/anonymous shares)',
     }),
     password: Type.String({
-      minLength: 1,
-      description: 'SMB password — stored in rclone.conf in clear text',
+      description:
+        'SMB password (empty for guest/anonymous shares). Obfuscated via `rclone obscure` before being written to rclone.conf.',
     }),
     domain: Type.Optional(
       Type.String({
