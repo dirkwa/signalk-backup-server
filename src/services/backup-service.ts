@@ -352,10 +352,16 @@ class BackupService {
   async enforceRetention(): Promise<CleanupResult> {
     await this.ensureInitialized();
 
-    // keeper plumbed retention values through env vars (config.retention*).
-    // signalk-backup-server has fixed retention defaults — exposed as
-    // DEFAULT_RETENTION from the backup types module.
-    const retention: RetentionConfig = { ...DEFAULT_RETENTION };
+    // Per-user retention from settings, falling back to DEFAULT_RETENTION
+    // for fresh installs or any field the user hasn't customised.
+    const settings = await settingsService.get();
+    const userRetention = settings.retention;
+    const retention: RetentionConfig = {
+      hourly: userRetention?.hourly ?? DEFAULT_RETENTION.hourly,
+      daily: userRetention?.daily ?? DEFAULT_RETENTION.daily,
+      weekly: userRetention?.weekly ?? DEFAULT_RETENTION.weekly,
+      startup: userRetention?.startup ?? DEFAULT_RETENTION.startup,
+    };
 
     const result: CleanupResult = {
       deletedCount: 0,

@@ -191,10 +191,27 @@ export interface BackupServerSettings {
   backupExclusions?: string[];
   /** Include InfluxDB/Grafana history data in backups (deferred to v2 — flag preserved for compat) */
   includeHistoryInBackups?: boolean;
+  /**
+   * Per-tier retention limits. Falls back to DEFAULT_RETENTION when absent.
+   * Manual backups are intentionally not in here — never auto-pruned.
+   */
+  retention?: RetentionSettings;
   /** Cloud sync configuration (set when Google Drive is connected) */
   cloudSync?: CloudSyncSettings;
   /** Installation identity (computed on first cloud backup setup) */
   identity?: InstallIdentitySettings;
+}
+
+/**
+ * Per-tier retention limits stored in settings.json. Same shape as
+ * RetentionConfig in types/backup.ts but kept as its own interface
+ * here so settings-service stays decoupled from the kopia types.
+ */
+export interface RetentionSettings {
+  hourly: number;
+  daily: number;
+  weekly: number;
+  startup: number;
 }
 
 /**

@@ -148,9 +148,35 @@ export const changePasswordSchema = Type.Object(
   }
 );
 
+/**
+ * Schema for PUT /api/backups/retention.
+ *
+ * Each tier is optional so the UI can do partial updates (e.g. just
+ * change `daily` without re-sending the others). Sane bounds: at least
+ * 1 per tier (0 would auto-delete every backup of that type immediately
+ * — keep at least one for emergency rollback). Upper bound 365 to stop
+ * accidental keep-forever typos.
+ */
+const retentionCount = Type.Integer({ minimum: 1, maximum: 365 });
+export const retentionSchema = Type.Object(
+  {
+    hourly: Type.Optional(retentionCount),
+    daily: Type.Optional(retentionCount),
+    weekly: Type.Optional(retentionCount),
+    startup: Type.Optional(retentionCount),
+  },
+  {
+    $id: 'RetentionRequest',
+    description:
+      'How many of each tier to keep. Manual backups are intentionally not in here — they are never auto-pruned.',
+    additionalProperties: false,
+  }
+);
+
 /** Inferred types for use in route handlers */
 export type CreateBackupInput = Static<typeof createBackupSchema>;
 export type BackupIdParam = Static<typeof backupIdParamSchema>;
 export type UploadQuery = Static<typeof uploadQuerySchema>;
 export type EstimateQuery = Static<typeof estimateQuerySchema>;
 export type ChangePasswordInput = Static<typeof changePasswordSchema>;
+export type RetentionInput = Static<typeof retentionSchema>;
