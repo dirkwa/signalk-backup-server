@@ -510,7 +510,7 @@ api.post(
   {
     summary: 'Connect to an SMB share',
     description:
-      'Validates host/share/credentials by listing the share, then persists. SMB password is stored in rclone.conf in clear text (matching `rclone config` defaults).',
+      'Validates host/share/credentials by listing the share, then persists. SMB password is obfuscated via `rclone obscure` before being written to rclone.conf. Leave user+password empty for guest/anonymous shares.',
     body: smbConnectSchema,
     responses: {
       200: { description: 'Connected' },

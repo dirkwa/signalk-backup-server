@@ -1,6 +1,4 @@
-// rclone.conf stores SMB creds in clear text — matches `rclone config`'s
-// default behaviour. UI surfaces the trade-off; we don't try to be cleverer
-// than rclone itself.
+// WHY: rclone-obscure makes passwords reversible; UI surfaces trade-off; user/password may be empty for guest shares
 
 import { execFile as execFileCb } from 'child_process';
 import { promisify } from 'util';
@@ -25,6 +23,8 @@ export const RCLONE_SMB_REMOTE_NAME = 'smb';
 // host or unreachable network and we want to fail loudly rather than
 // hang the connect form.
 const TEST_TIMEOUT_MS = 5000;
+
+const OBSCURE_TIMEOUT_MS = 2000;
 
 export interface SmbConnectInput {
   host: string;
@@ -63,7 +63,7 @@ class SmbAuthService {
       host,
       share,
       user,
-      email: `${user}@${host}/${share}`,
+      email: user ? `${user}@${host}/${share}` : `${host}/${share}`,
     };
   }
 
@@ -72,8 +72,9 @@ class SmbAuthService {
   // removed so we never leave a partially-saved state.
   async connect(input: SmbConnectInput): Promise<void> {
     const { host, share, user, password, domain } = input;
-    if (!host || !share || !user) {
-      throw new Error('host, share, and user are required');
+    // user/password optional: SMB shares can allow guest/anonymous access.
+    if (!host || !share) {
+      throw new Error('host and share are required');
     }
 
     await this.writeRcloneSmbBlock({ host, user, password, domain });
@@ -138,11 +139,30 @@ class SmbAuthService {
     // INI-injection guard — newline in any field could open a fake
     // section and inject arbitrary rclone config; `[` / `]` could open
     // a fresh section header on the same line. Reject these eagerly.
+    // user/password are optional (guest/anonymous shares) so only
+    // validate them when provided.
     assertIniSafe('host', opts.host, 'no-whitespace');
-    assertIniSafe('user', opts.user, 'no-newline-or-bracket');
-    assertIniSafe('password', opts.password, 'no-newline-or-bracket');
+    if (opts.user) {
+      assertIniSafe('user', opts.user, 'no-newline-or-bracket');
+    }
+    if (opts.password) {
+      assertIniSafe('password', opts.password, 'no-newline-or-bracket');
+    }
     if (opts.domain !== undefined && opts.domain !== '') {
       assertIniSafe('domain', opts.domain, 'no-whitespace');
+    }
+
+    // rclone refuses plaintext `pass = …` ("input too short when revealing
+    // password"). Run it through `rclone obscure` so it matches what
+    // `rclone config` would have written. Password is passed via execFile
+    // argv (no shell parsing) — briefly visible in `ps` but the container
+    // is single-tenant (only our server runs in it).
+    let obscured = '';
+    if (opts.password) {
+      const { stdout } = await execFile(config.rcloneBinaryPath, ['obscure', opts.password], {
+        timeout: OBSCURE_TIMEOUT_MS,
+      });
+      obscured = stdout.trim();
     }
 
     const existing = (await this.readRcloneConfigSafely()) ?? '';
@@ -151,8 +171,8 @@ class SmbAuthService {
       `[${RCLONE_SMB_REMOTE_NAME}]`,
       'type = smb',
       `host = ${opts.host}`,
-      `user = ${opts.user}`,
-      `pass = ${opts.password}`,
+      ...(opts.user ? [`user = ${opts.user}`] : []),
+      ...(obscured ? [`pass = ${obscured}`] : []),
       ...(opts.domain ? [`domain = ${opts.domain}`] : []),
       '',
     ].join('\n');
