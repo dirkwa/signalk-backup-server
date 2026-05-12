@@ -489,14 +489,6 @@ class BackupService {
     };
   }
 
-  /**
-   * Get Kopia repository statistics (dedup, compression, etc.)
-   *
-   * originalSize is the sum of snapshot logical sizes (kopia's pre-dedup,
-   * pre-compress summary); totalSize is the actual bytes on disk under
-   * config.kopiaRepoPath. dedupSavings is the delta so the UI can render
-   * a single "Nx dedup" indicator from one number.
-   */
   async getRepositoryStats(): Promise<RepositoryStats> {
     await this.ensureInitialized();
 
@@ -507,6 +499,7 @@ class BackupService {
 
       const originalSize = backups.reduce((sum, b) => sum + b.size, 0);
       const totalSize = await this.getDirectorySize(config.kopiaRepoPath);
+      // Clamp: filesystem metadata can briefly exceed logical size on a first tiny snapshot.
       const dedupSavings = Math.max(0, originalSize - totalSize);
 
       return {
