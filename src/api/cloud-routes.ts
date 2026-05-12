@@ -19,6 +19,7 @@ import { restoreService, type RestoreProgress } from '../services/restore-servic
 import { settingsService } from '../services/settings-service.js';
 import { logger } from '../services/logger.js';
 import { createApiRouter } from './openapi-registry.js';
+import { smbConnectSchema, type SmbConnectBody } from '../schemas/cloud.js';
 import type { ApiResponse } from '../types/api.js';
 
 const api = createApiRouter('Cloud');
@@ -510,37 +511,35 @@ api.post(
     summary: 'Connect to an SMB share',
     description:
       'Validates host/share/credentials by listing the share, then persists. SMB password is stored in rclone.conf in clear text (matching `rclone config` defaults).',
+    body: smbConnectSchema,
     responses: {
       200: { description: 'Connected' },
-      400: { description: 'Invalid input or auth failed' },
-      500: { description: 'Connection failed' },
+      400: { description: 'Invalid input or connection test failed' },
+      500: { description: 'Internal error while writing rclone config' },
     },
   },
   async (req: Request, res: Response) => {
+    // The TypeBox middleware has already validated the body shape and
+    // rejected missing/empty fields with a 400 — handler can rely on
+    // the typed values directly.
+    const body = req.body as SmbConnectBody;
     try {
-      const body = (req.body ?? {}) as Record<string, unknown>;
-      const host = typeof body.host === 'string' ? body.host : '';
-      const share = typeof body.share === 'string' ? body.share : '';
-      const user = typeof body.user === 'string' ? body.user : '';
-      const password = typeof body.password === 'string' ? body.password : '';
-      const domain = typeof body.domain === 'string' ? body.domain : undefined;
-
-      if (!host || !share || !user || !password) {
-        const response: ApiResponse<never> = {
-          success: false,
-          error: { code: 'INVALID_INPUT', message: 'host, share, user, and password are required' },
-          timestamp: new Date().toISOString(),
-        };
-        res.status(400).json(response);
-        return;
-      }
-
-      try {
-        await smbAuthService.connect({ host, share, user, password, domain });
-      } catch (err) {
-        // Treat connection-validation failures (wrong creds, host
-        // unreachable, share doesn't exist) as 400 so the UI surfaces
-        // them inline instead of as a generic 500.
+      await smbAuthService.connect(body);
+      const response: ApiResponse<{ connected: boolean }> = {
+        success: true,
+        data: { connected: true },
+        timestamp: new Date().toISOString(),
+      };
+      res.json(response);
+    } catch (err) {
+      // Distinguish "user-correctable" failures (wrong creds, host
+      // unreachable, INI-injection guards triggered, share missing)
+      // from genuinely-internal failures (rclone.conf write failed,
+      // unexpected exception). The former go back as 400 so the UI
+      // can show them inline; the latter propagate as 500 with the
+      // generic logger trail so we can find them later.
+      if (isClientCorrectableSmbError(err)) {
+        logger.debug({ err }, 'SMB connect rejected (client-correctable)');
         const response: ApiResponse<never> = {
           success: false,
           error: {
@@ -553,19 +552,12 @@ api.post(
         return;
       }
 
-      const response: ApiResponse<{ connected: boolean }> = {
-        success: true,
-        data: { connected: true },
-        timestamp: new Date().toISOString(),
-      };
-      res.json(response);
-    } catch (error) {
-      logger.error({ error }, 'Failed to connect to SMB share');
+      logger.error({ err }, 'Internal error during SMB connect');
       const response: ApiResponse<never> = {
         success: false,
         error: {
-          code: 'CONNECT_FAILED',
-          message: error instanceof Error ? error.message : 'Connection failed',
+          code: 'INTERNAL_ERROR',
+          message: err instanceof Error ? err.message : 'Internal error',
         },
         timestamp: new Date().toISOString(),
       };
@@ -573,6 +565,30 @@ api.post(
     }
   }
 );
+
+// `smbAuthService.connect()` throws for several reasons. Most are the
+// user's input or LAN state and the right response is 400 with the
+// message surfaced to the UI. A `node:fs` error or unexpected exception
+// is internal and should propagate as 500 so we don't quietly mask
+// real bugs as "wrong password".
+function isClientCorrectableSmbError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message;
+  // Validation failures from assertIniSafe(): caller can fix by
+  // changing input.
+  if (msg.includes('contains control characters') || msg.includes('reserved for INI')) return true;
+  if (msg.includes('must not contain whitespace')) return true;
+  if (msg.includes("must not start with '['")) return true;
+  if (msg.includes('must be a non-empty string')) return true;
+  // The connect() wrapper labels its rclone-lsd timeouts and auth
+  // errors with this prefix.
+  if (msg.startsWith('SMB connection test failed')) return true;
+  // Common rclone/node error codes for "not the server's fault" cases.
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code === 'ECONNREFUSED' || code === 'ETIMEDOUT' || code === 'EHOSTUNREACH') return true;
+  if (code === 'ENOTFOUND') return true;
+  return false;
+}
 
 /**
  * POST /api/cloud/smb/disconnect

@@ -140,20 +140,26 @@ export function migrateCloudSyncSettings(input: unknown): CloudSyncSettings | un
       hostPath: typeof raw.hostPath === 'string' ? raw.hostPath : raw.containerPath,
     };
   }
-  if (
-    raw.provider === 'smb' &&
-    typeof raw.host === 'string' &&
-    typeof raw.share === 'string' &&
-    typeof raw.user === 'string'
-  ) {
-    return {
-      provider: 'smb',
-      ...base,
-      host: raw.host,
-      share: raw.share,
-      user: raw.user,
-      ...(typeof raw.domain === 'string' && raw.domain !== '' ? { domain: raw.domain } : {}),
-    };
+  if (raw.provider === 'smb') {
+    // Reject empty/whitespace-only required fields — those would
+    // produce an unusable rclone.conf section and silently land users
+    // on a broken provider.
+    const host = typeof raw.host === 'string' ? raw.host.trim() : '';
+    const share = typeof raw.share === 'string' ? raw.share.trim() : '';
+    const user = typeof raw.user === 'string' ? raw.user.trim() : '';
+    if (host && share && user) {
+      const domain = typeof raw.domain === 'string' ? raw.domain.trim() : '';
+      return {
+        provider: 'smb',
+        ...base,
+        host,
+        share,
+        user,
+        ...(domain ? { domain } : {}),
+      };
+    }
+    // Fall through to gdrive default — settings.json had a
+    // half-formed smb blob, treat as not configured.
   }
   // Default: gdrive. Anything we don't recognise falls through.
   return { provider: 'gdrive', ...base };

@@ -1,10 +1,6 @@
-// SMB cloud-sync provider — wraps rclone's `smb` backend.
-//
-// The destination is an SMB share. We talk to it via rclone, which
-// stores the credentials in rclone.conf in clear text (matching what
-// `rclone config` writes by default). The plugin/UI flags this to the
-// user so they can decide if it's an acceptable threat model on their
-// host.
+// rclone.conf stores SMB creds in clear text — matches `rclone config`'s
+// default behaviour. UI surfaces the trade-off; we don't try to be cleverer
+// than rclone itself.
 
 import { execFile as execFileCb } from 'child_process';
 import { promisify } from 'util';
@@ -139,6 +135,16 @@ class SmbAuthService {
     password: string;
     domain?: string;
   }): Promise<void> {
+    // INI-injection guard — newline in any field could open a fake
+    // section and inject arbitrary rclone config; `[` / `]` could open
+    // a fresh section header on the same line. Reject these eagerly.
+    assertIniSafe('host', opts.host, 'no-whitespace');
+    assertIniSafe('user', opts.user, 'no-newline-or-bracket');
+    assertIniSafe('password', opts.password, 'no-newline-or-bracket');
+    if (opts.domain !== undefined && opts.domain !== '') {
+      assertIniSafe('domain', opts.domain, 'no-whitespace');
+    }
+
     const existing = (await this.readRcloneConfigSafely()) ?? '';
     const stripped = stripSection(existing, RCLONE_SMB_REMOTE_NAME);
     const block = [
@@ -170,6 +176,41 @@ class SmbAuthService {
       await chmod(config.rcloneConfigPath, 0o600);
     } catch {
       // best-effort
+    }
+  }
+}
+
+type IniRule = 'no-whitespace' | 'no-newline-or-bracket';
+
+// Distinct rules let host/domain be stricter than user/password
+// (where punctuation is legitimate).
+function assertIniSafe(field: string, value: string, rule: IniRule): void {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`${field} must be a non-empty string`);
+  }
+  // No newlines or C0/DEL control chars in any field could close
+  // the current line and open a fake INI section, injecting
+  // arbitrary rclone remote config.
+  // eslint-disable-next-line no-control-regex
+  if (/[\r\n\u0000-\u001f\u007f]/.test(value)) {
+    throw new Error(`${field} contains control characters or newlines`);
+  }
+  if (rule === 'no-whitespace') {
+    // Hostnames and SMB domains have no legitimate whitespace.
+    if (/\s/.test(value)) {
+      throw new Error(`${field} must not contain whitespace`);
+    }
+    if (/[[\]=]/.test(value)) {
+      throw new Error(`${field} contains characters reserved for INI syntax`);
+    }
+  } else {
+    // Usernames / passwords can legitimately contain `=` or whitespace
+    // (corporate password policies do strange things), but `[` `]` at
+    // the line start would still open a section header. We've already
+    // banned newlines so a literal bracket mid-value is harmless to
+    // rclone's parser; reject only the leading bracket case.
+    if (/^\s*\[/.test(value)) {
+      throw new Error(`${field} must not start with '['`);
     }
   }
 }

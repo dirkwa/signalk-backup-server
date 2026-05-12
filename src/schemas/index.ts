@@ -9,4 +9,5 @@
  */
 
 export * from './backup.js';
+export * from './cloud.js';
 export * from './events.js';
