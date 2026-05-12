@@ -910,7 +910,7 @@ class BackupService {
     for (const pattern of DB_PLUGIN_DEFAULT_EXCLUSIONS) {
       const stripped = pattern.replace(/^plugin-config-data\//, '').replace(/\/$/, '');
       if (this.matchesGlob(name, stripped)) {
-        return 'Live database state — filesystem snapshot may be inconsistent. v0.2 will offer a safe export via the plugin API.';
+        return 'Live database state — filesystem snapshot may be inconsistent.';
       }
     }
     return null;
