@@ -154,12 +154,13 @@ class SmbAuthService {
 
     // rclone refuses plaintext `pass = …` ("input too short when revealing
     // password"). Run it through `rclone obscure` so it matches what
-    // `rclone config` would have written.
+    // `rclone config` would have written. Password is passed via execFile
+    // argv (no shell parsing) — briefly visible in `ps` but the container
+    // is single-tenant (only our server runs in it).
     let obscured = '';
     if (opts.password) {
-      const { stdout } = await execFile(config.rcloneBinaryPath, ['obscure', '-'], {
+      const { stdout } = await execFile(config.rcloneBinaryPath, ['obscure', opts.password], {
         timeout: OBSCURE_TIMEOUT_MS,
-        input: opts.password + '\n',
       });
       obscured = stdout.trim();
     }
