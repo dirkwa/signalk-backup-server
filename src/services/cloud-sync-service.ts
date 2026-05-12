@@ -70,6 +70,14 @@ type SyncTarget =
        * the pre-sync internet-reachability check.
        */
       requiresInternet: boolean;
+      /**
+       * Root path of all installs at the destination, e.g.
+       * `gdrive:SignalK-Backups` or `smb:dirk/SignalK-Backups`. Used by
+       * listInstalls and the install-info.json sidecar — these paths
+       * MUST go through here, not through string-concatenation against
+       * `remoteName`, or SMB will be missing the `<share>/` segment.
+       */
+      installsRoot: string;
       /** Build the full kopia/rclone path for an install's backups folder. */
       remotePath: (folderId: string) => string;
       /** Extra `--rclone-args=…` to pass on every kopia sync for this provider. */
@@ -124,6 +132,7 @@ function getProviderBindings(cloudSync: CloudSyncSettings | undefined): Provider
           kind: 'rclone',
           remoteName: RCLONE_GDRIVE_REMOTE_NAME,
           requiresInternet: true,
+          installsRoot: `${RCLONE_GDRIVE_REMOTE_NAME}:SignalK-Backups`,
           remotePath: (folderId) => `${RCLONE_GDRIVE_REMOTE_NAME}:SignalK-Backups/${folderId}`,
           // Drive performs better with smaller chunks for high-latency
           // round-trips. SMB/local won't want this.
@@ -159,7 +168,8 @@ function getProviderBindings(cloudSync: CloudSyncSettings | undefined): Provider
           // SMB shares are LAN-local — no WAN check before sync.
           requiresInternet: false,
           // rclone smb uses `<remote>:<share>/<path>` to reach a folder
-          // inside the share.
+          // inside the share — the `<share>/` segment is non-optional.
+          installsRoot: `${RCLONE_SMB_REMOTE_NAME}:${share}/SignalK-Backups`,
           remotePath: (folderId) =>
             `${RCLONE_SMB_REMOTE_NAME}:${share}/SignalK-Backups/${folderId}`,
           // No SMB-specific tuning needed for first cut; rclone defaults
@@ -309,7 +319,7 @@ class CloudSyncService {
       if (bindings.syncTarget.kind === 'rclone') {
         const remotePath = bindings.syncTarget.remotePath(folderId);
         await this.runKopiaSync('sync-to', remotePath, undefined, bindings.syncTarget);
-        await this.writeInstallInfoToRclone(folderId, bindings.syncTarget.remoteName);
+        await this.writeInstallInfoToRclone(bindings.syncTarget.installsRoot, folderId);
         logger.info({ remotePath, provider }, 'Cloud sync completed');
       } else {
         const installPath = bindings.syncTarget.installPath(folderId);
@@ -418,22 +428,16 @@ class CloudSyncService {
     }
 
     if (bindings.syncTarget.kind === 'rclone') {
-      return this.listInstallsViaRclone(bindings.syncTarget.remoteName);
+      return this.listInstallsViaRclone(bindings.syncTarget.installsRoot);
     }
     return this.listInstallsViaFilesystem(bindings.syncTarget.basePath);
   }
 
-  private async listInstallsViaRclone(remoteName: string): Promise<CloudInstall[]> {
+  private async listInstallsViaRclone(installsRoot: string): Promise<CloudInstall[]> {
     try {
       const { stdout } = await execFile(
         config.rcloneBinaryPath,
-        [
-          'lsjson',
-          '--config',
-          config.rcloneConfigPath,
-          `${remoteName}:SignalK-Backups/`,
-          '--dirs-only',
-        ],
+        ['lsjson', '--config', config.rcloneConfigPath, `${installsRoot}/`, '--dirs-only'],
         { timeout: 30000 }
       );
 
@@ -451,7 +455,7 @@ class CloudSyncService {
               'cat',
               '--config',
               config.rcloneConfigPath,
-              `${remoteName}:SignalK-Backups/${dir.Name}/install-info.json`,
+              `${installsRoot}/${dir.Name}/install-info.json`,
             ],
             { timeout: 15000 }
           );
@@ -766,7 +770,7 @@ class CloudSyncService {
     }
   }
 
-  private async writeInstallInfoToRclone(folderId: string, remoteName: string): Promise<void> {
+  private async writeInstallInfoToRclone(installsRoot: string, folderId: string): Promise<void> {
     try {
       const info = await installIdentityService.getInstallInfo();
       const tmpPath = '/tmp/install-info.json';
@@ -779,7 +783,7 @@ class CloudSyncService {
           '--config',
           config.rcloneConfigPath,
           tmpPath,
-          `${remoteName}:SignalK-Backups/${folderId}/install-info.json`,
+          `${installsRoot}/${folderId}/install-info.json`,
         ],
         { timeout: 30000 }
       );
