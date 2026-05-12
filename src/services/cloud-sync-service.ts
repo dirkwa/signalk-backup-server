@@ -28,6 +28,7 @@ import {
 import { installIdentityService } from './install-identity-service.js';
 import { gdriveAuthService, RCLONE_GDRIVE_REMOTE_NAME } from './gdrive-auth-service.js';
 import { localFsService } from './local-fs-service.js';
+import { smbAuthService, RCLONE_SMB_REMOTE_NAME } from './smb-auth-service.js';
 import { kopiaClient } from './kopia-client.js';
 import type { CloudRestorePhase, CloudRestorePrepareResult } from '../types/backup.js';
 
@@ -135,6 +136,26 @@ function getProviderBindings(cloudSync: CloudSyncSettings | undefined): Provider
           kind: 'filesystem',
           basePath,
           installPath: (folderId) => `${basePath}/SignalK-Backups/${folderId}`,
+        },
+      };
+    }
+    case 'smb': {
+      if (!cloudSync || cloudSync.provider !== 'smb') {
+        throw new Error('smb provider requires cloudSync.share');
+      }
+      const share = cloudSync.share;
+      return {
+        authService: smbAuthService,
+        syncTarget: {
+          kind: 'rclone',
+          remoteName: RCLONE_SMB_REMOTE_NAME,
+          // rclone smb uses `<remote>:<share>/<path>` to reach a folder
+          // inside the share.
+          remotePath: (folderId) =>
+            `${RCLONE_SMB_REMOTE_NAME}:${share}/SignalK-Backups/${folderId}`,
+          // No SMB-specific tuning needed for first cut; rclone defaults
+          // are reasonable on a LAN.
+          rcloneFlags: () => [],
         },
       };
     }
