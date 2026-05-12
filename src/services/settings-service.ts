@@ -30,10 +30,11 @@ export const DEFAULT_KOPIA_PASSWORD = 'keeperbackup';
  * - `local`: a path on the host (USB drive, NFS mount, anything the
  *   user has mounted under /media or /mnt). No rclone — kopia writes
  *   to the path directly.
- *
- * Future variants (`smb`, …) extend the union the same way.
+ * - `smb`: SMB/CIFS share (NAS, Synology, TrueNAS, Windows shares,
+ *   generic Samba) via rclone's smb backend. Credentials live in
+ *   rclone.conf in clear text (matching `rclone config`'s default).
  */
-export type CloudSyncProvider = 'gdrive' | 'local';
+export type CloudSyncProvider = 'gdrive' | 'local' | 'smb';
 
 /** Fields shared by every variant of CloudSyncSettings. */
 export interface CloudSyncSettingsBase {
@@ -81,6 +82,23 @@ export interface LocalCloudSyncSettings extends CloudSyncSettingsBase {
 }
 
 /**
+ * SMB / CIFS share cloud sync configuration. The actual password is
+ * persisted only in rclone.conf (mode 0o600) — never in settings.json
+ * — so a settings.json copy doesn't leak share credentials.
+ */
+export interface SmbCloudSyncSettings extends CloudSyncSettingsBase {
+  provider: 'smb';
+  /** Hostname or IP, e.g. "synology.local" or "192.168.1.50". */
+  host: string;
+  /** Share name (no leading slash, no host), e.g. "backups". */
+  share: string;
+  /** SMB user. */
+  user: string;
+  /** Optional NetBIOS / NTLM domain; defaults to WORKGROUP. */
+  domain?: string;
+}
+
+/**
  * Cloud sync configuration — discriminated on `provider`.
  *
  * Add a new variant by:
@@ -90,7 +108,10 @@ export interface LocalCloudSyncSettings extends CloudSyncSettingsBase {
  *  3. adding it to this union,
  *  4. extending `migrateCloudSyncSettings()` below if needed.
  */
-export type CloudSyncSettings = GDriveCloudSyncSettings | LocalCloudSyncSettings;
+export type CloudSyncSettings =
+  | GDriveCloudSyncSettings
+  | LocalCloudSyncSettings
+  | SmbCloudSyncSettings;
 
 /**
  * Migrate an arbitrary loaded `cloudSync` blob into the canonical
@@ -118,6 +139,27 @@ export function migrateCloudSyncSettings(input: unknown): CloudSyncSettings | un
       containerPath: raw.containerPath,
       hostPath: typeof raw.hostPath === 'string' ? raw.hostPath : raw.containerPath,
     };
+  }
+  if (raw.provider === 'smb') {
+    // Reject empty/whitespace-only required fields — those would
+    // produce an unusable rclone.conf section and silently land users
+    // on a broken provider.
+    const host = typeof raw.host === 'string' ? raw.host.trim() : '';
+    const share = typeof raw.share === 'string' ? raw.share.trim() : '';
+    const user = typeof raw.user === 'string' ? raw.user.trim() : '';
+    if (host && share && user) {
+      const domain = typeof raw.domain === 'string' ? raw.domain.trim() : '';
+      return {
+        provider: 'smb',
+        ...base,
+        host,
+        share,
+        user,
+        ...(domain ? { domain } : {}),
+      };
+    }
+    // Fall through to gdrive default — settings.json had a
+    // half-formed smb blob, treat as not configured.
   }
   // Default: gdrive. Anything we don't recognise falls through.
   return { provider: 'gdrive', ...base };

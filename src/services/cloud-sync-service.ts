@@ -28,6 +28,7 @@ import {
 import { installIdentityService } from './install-identity-service.js';
 import { gdriveAuthService, RCLONE_GDRIVE_REMOTE_NAME } from './gdrive-auth-service.js';
 import { localFsService } from './local-fs-service.js';
+import { smbAuthService, RCLONE_SMB_REMOTE_NAME } from './smb-auth-service.js';
 import { kopiaClient } from './kopia-client.js';
 import type { CloudRestorePhase, CloudRestorePrepareResult } from '../types/backup.js';
 
@@ -63,6 +64,12 @@ type SyncTarget =
   | {
       kind: 'rclone';
       remoteName: string;
+      /**
+       * True when reaching this destination requires WAN connectivity
+       * (gdrive). False for LAN-local rclone backends (smb). Drives
+       * the pre-sync internet-reachability check.
+       */
+      requiresInternet: boolean;
       /** Build the full kopia/rclone path for an install's backups folder. */
       remotePath: (folderId: string) => string;
       /** Extra `--rclone-args=…` to pass on every kopia sync for this provider. */
@@ -116,6 +123,7 @@ function getProviderBindings(cloudSync: CloudSyncSettings | undefined): Provider
         syncTarget: {
           kind: 'rclone',
           remoteName: RCLONE_GDRIVE_REMOTE_NAME,
+          requiresInternet: true,
           remotePath: (folderId) => `${RCLONE_GDRIVE_REMOTE_NAME}:SignalK-Backups/${folderId}`,
           // Drive performs better with smaller chunks for high-latency
           // round-trips. SMB/local won't want this.
@@ -135,6 +143,28 @@ function getProviderBindings(cloudSync: CloudSyncSettings | undefined): Provider
           kind: 'filesystem',
           basePath,
           installPath: (folderId) => `${basePath}/SignalK-Backups/${folderId}`,
+        },
+      };
+    }
+    case 'smb': {
+      if (!cloudSync || cloudSync.provider !== 'smb') {
+        throw new Error('smb provider requires cloudSync.share');
+      }
+      const share = cloudSync.share;
+      return {
+        authService: smbAuthService,
+        syncTarget: {
+          kind: 'rclone',
+          remoteName: RCLONE_SMB_REMOTE_NAME,
+          // SMB shares are LAN-local — no WAN check before sync.
+          requiresInternet: false,
+          // rclone smb uses `<remote>:<share>/<path>` to reach a folder
+          // inside the share.
+          remotePath: (folderId) =>
+            `${RCLONE_SMB_REMOTE_NAME}:${share}/SignalK-Backups/${folderId}`,
+          // No SMB-specific tuning needed for first cut; rclone defaults
+          // are reasonable on a LAN.
+          rcloneFlags: () => [],
         },
       };
     }
@@ -252,9 +282,10 @@ class CloudSyncService {
         throw new Error(`Cloud provider not connected: ${provider}`);
       }
 
-      // Internet connectivity is only relevant for rclone-backed targets.
-      // Local-filesystem syncs work fine offline.
-      if (bindings.syncTarget.kind === 'rclone') {
+      // Internet connectivity is only relevant for WAN-bound rclone
+      // targets (gdrive). LAN-local rclone (smb) and pure-filesystem
+      // (local) work fine offline.
+      if (bindings.syncTarget.kind === 'rclone' && bindings.syncTarget.requiresInternet) {
         const online = await this.checkInternet();
         if (!online) {
           const error = 'No internet connection available';
@@ -319,7 +350,7 @@ class CloudSyncService {
       throw new Error(`Cloud provider not connected: ${provider}`);
     }
 
-    if (bindings.syncTarget.kind === 'rclone') {
+    if (bindings.syncTarget.kind === 'rclone' && bindings.syncTarget.requiresInternet) {
       const online = await this.checkInternet();
       if (!online) {
         throw new Error('No internet connection available');
