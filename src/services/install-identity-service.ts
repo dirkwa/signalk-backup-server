@@ -2,13 +2,16 @@
  * Install Identity Service
  *
  * Manages the identity of this SignalK installation for cloud backup purposes.
- * Each installation gets a unique folder name on Google Drive based on:
- * - Vessel name (from SignalK settings.json)
- * - Hardware model (from /proc/device-tree/model or OS info)
- * - A short hex ID derived from the server UUID
+ * Each installation gets a unique folder name on the cloud destination based
+ * on `<vesselName>-<hostName>-<installId>`, dropping any empty segments. The
+ * host hostname is passed in via the HOST_HOSTNAME env (SignalK runs on the
+ * host, so the plugin sees the real machine name; inside the container
+ * os.hostname() is a meaningless container id). Hardware info is still
+ * captured for install-info.json but no longer in the folder name.
  *
  * Identity is stored in the existing KeeperSettings and computed on first
- * cloud backup configuration.
+ * cloud backup configuration. Existing identities are returned as-is so
+ * cloud folders never get renamed under a running install.
  */
 
 import { readFile, writeFile } from 'fs/promises';
@@ -22,17 +25,21 @@ import { settingsService, type KeeperSettings } from './settings-service.js';
 import { logger } from './logger.js';
 
 export interface InstallIdentity {
-  /** Human-readable installation name (e.g., "SV-Wanderlust-RPi4") */
+  /** Human-readable installation name, e.g. "Petronella-pi5radar". May be "unconfigured" on a fresh install. */
   installName: string;
   /** 4-char hex ID derived from server UUID */
   installId: string;
   /** SignalK server UUID */
   serverUUID: string;
-  /** Cloud backup folder name: "{installName}-{installId}" */
+  /**
+   * Cloud backup folder name: typically "{vesselName}-{hostName}-{installId}",
+   * dropping empty segments. Falls back to "unconfigured-{installId}" when
+   * neither vessel name nor host hostname are available.
+   */
   folderId: string;
-  /** Vessel name from SignalK settings */
+  /** Vessel name from SignalK settings (empty on unconfigured installs) */
   vesselName: string;
-  /** Hardware description (e.g., "Raspberry Pi 4 Model B") */
+  /** Hardware description, e.g. "Raspberry Pi 4 Model B" — captured for install-info.json, not used in folderId */
   hardware: string;
 }
 
@@ -114,7 +121,8 @@ async function readVesselName(): Promise<string> {
     }
   }
 
-  return hostname();
+  // Unconfigured — let createIdentity() decide what to put in the folder name.
+  return '';
 }
 
 /**
@@ -163,23 +171,6 @@ function sanitizeForFolder(name: string): string {
     .slice(0, 50); // Limit length
 }
 
-/**
- * Shorten hardware model for folder name
- * e.g., "Raspberry Pi 4 Model B Rev 1.5" → "RPi4"
- */
-function shortenHardware(hardware: string): string {
-  // Raspberry Pi
-  const rpiMatch = hardware.match(/Raspberry Pi (\d+)/i);
-  if (rpiMatch) return `RPi${rpiMatch[1]}`;
-
-  // Generic: take first word + architecture
-  if (hardware.includes('linux')) return 'Linux';
-  if (hardware.includes('darwin')) return 'Mac';
-  if (hardware.includes('win32')) return 'Win';
-
-  return hardware.split(/[\s-]/)[0]?.slice(0, 10) ?? 'Unknown';
-}
-
 class InstallIdentityService {
   /**
    * Get or create the installation identity.
@@ -207,9 +198,18 @@ class InstallIdentityService {
     ]);
 
     const installId = shortIdFromUUID(serverUUID);
-    const shortHw = shortenHardware(hardware);
-    const installName = sanitizeForFolder(`${vesselName}-${shortHw}`);
-    const folderId = `${installName}-${installId}`;
+    // Build folderId from <vessel>-<host>-<id>, dropping empty segments.
+    // host comes from the plugin (SignalK runs on the host, so it sees the
+    // real hostname); inside the container os.hostname() is just a container
+    // id. Both vesselName and host can be empty on a fresh, unconfigured
+    // install — fall back to 'unconfigured-<id>' so multi-install shares
+    // stay disambiguated.
+    const hostName = process.env['HOST_HOSTNAME']?.trim() ?? '';
+    const segments = [vesselName, hostName, installId]
+      .map((s) => sanitizeForFolder(s))
+      .filter((s) => s.length > 0);
+    const folderId = segments.length > 1 ? segments.join('-') : `unconfigured-${installId}`;
+    const installName = segments.slice(0, -1).join('-') || 'unconfigured';
 
     const identity: InstallIdentity = {
       installName,
@@ -246,6 +246,7 @@ class InstallIdentityService {
       installName: identity.installName,
       installId: identity.installId,
       vesselName: identity.vesselName,
+      hostName: process.env['HOST_HOSTNAME']?.trim() ?? '',
       hardware: identity.hardware,
       serverUUID: identity.serverUUID,
       platform: process.platform,
