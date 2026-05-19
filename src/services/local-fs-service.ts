@@ -18,6 +18,13 @@ export const LOCAL_BASELINE_MOUNTS: ReadonlyArray<{ container: string; host: str
   { container: '/host-mnt', host: '/mnt' },
 ];
 
+// Shared by status + validate so both surfaces give the user the same actionable instructions.
+const EACCES_HINT =
+  'directory exists but is not writable by the backup engine ' +
+  '(usually because it was created as root). ' +
+  'Either create the directory as the Signal K user, or have an ' +
+  'administrator run `chown` on it for that user, then retry.';
+
 export interface LocalCandidate {
   /** Container-side absolute path (what gets persisted in settings.cloudSync). */
   containerPath: string;
@@ -94,7 +101,7 @@ class LocalFsService {
         code === 'ENOENT'
           ? 'path does not exist (drive unplugged or unmounted?)'
           : code === 'EACCES'
-            ? 'path is not writable'
+            ? EACCES_HINT
             : (err as Error).message;
       return { connected: false, configured: true, containerPath, hostPath, error };
     }
@@ -204,15 +211,7 @@ class LocalFsService {
       return null;
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
-      // Spell out the most common cause (root-owned dir) and the fix; bare "not writable" leaves users stuck.
-      if (code === 'EACCES') {
-        return (
-          'directory exists but is not writable by the backup engine ' +
-          '(usually because it was created as root). ' +
-          'Either create the directory as the Signal K user, or have an ' +
-          'administrator run `chown` on it for that user, then retry.'
-        );
-      }
+      if (code === 'EACCES') return EACCES_HINT;
       return (err as Error).message;
     }
   }
