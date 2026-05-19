@@ -35,17 +35,27 @@ The signalk-backup plugin sets all of these for you. Listed here for reference /
 
 All routes mounted under `/api/`. Full OpenAPI spec at `/api/openapi.json` and Swagger UI at `/api/docs`.
 
-| Group      | Notable routes                                                                                                |
-| ---------- | ------------------------------------------------------------------------------------------------------------- | ------- | --------------------------------------------------------------------------------------- |
-| Backups    | `GET/POST/DELETE /api/backups[/:id]`, `POST /api/backups/:id/restore`, `POST /api/backups/upload`             |
-| Scheduler  | `GET/POST /api/backups/scheduler[/start                                                                       | /stop]` |
-| Cloud sync | `GET /api/cloud/status`, `POST /api/cloud/sync`, `GET /api/cloud/installs`, `POST /api/cloud/restore[/prepare | /start  | /reset]`, `POST /api/cloud/gdrive/{connect,disconnect,auth-state,auth-callback,cancel}` |
-| Settings   | `GET /api/settings`, `PUT /api/settings`                                                                      |
-| Operations | `GET /api/operations`, `GET /api/operations/:id`                                                              |
-| Health     | `GET /api/health`                                                                                             |
-| GUI URL    | `GET /api/gui-url`                                                                                            |
+| Group      | Notable routes                                                                                                                                                                      |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Backups    | `GET /api/backups`, `POST /api/backups`, `GET /api/backups/:id`, `DELETE /api/backups/:id`, `POST /api/backups/:id/restore`, `POST /api/backups/upload`                             |
+| Scheduler  | `GET /api/backups/scheduler`, `POST /api/backups/scheduler/start`, `POST /api/backups/scheduler/stop`                                                                               |
+| Cloud sync | `GET /api/cloud/status`, `POST /api/cloud/sync`, `GET /api/cloud/installs`, `POST /api/cloud/restore/prepare`, `POST /api/cloud/restore/start`, `POST /api/cloud/restore/reset`     |
+| GDrive     | `POST /api/cloud/gdrive/connect`, `POST /api/cloud/gdrive/disconnect`, `POST /api/cloud/gdrive/auth-state`, `POST /api/cloud/gdrive/auth-callback`, `POST /api/cloud/gdrive/cancel` |
+| Settings   | `GET /api/settings`, `PUT /api/settings`                                                                                                                                            |
+| Operations | `GET /api/operations`, `GET /api/operations/:id`                                                                                                                                    |
+| Health     | `GET /api/health`                                                                                                                                                                   |
+| GUI URL    | `GET /api/gui-url`                                                                                                                                                                  |
 
 ## Direct run (debugging)
+
+The container needs two mounts:
+
+- `SIGNALK_DATA_PATH` — bind-mount the SignalK data dir you want to back up (read at runtime).
+- `DATA_DIR` — engine state (kopia repo, settings.json, rclone.conf). Must be writable by whatever uid the container runs as.
+
+For local cloud-sync destinations the engine looks at `/host-media` (bind from `/media`) and `/host-mnt` (bind from `/mnt`) — add those mounts if you want to test the local provider directly.
+
+`HOME` defaults to `DATA_DIR` so kopia and rclone find a writable home regardless of the runtime uid; under the signalk-backup plugin signalk-container starts this image as the SignalK user via `--user` (or `--userns=keep-id` on rootless Podman). Running the image without `--user`, like the example below, lets it run as root inside the container — fine for debugging, but written files land owned by root on the host.
 
 ```bash
 docker run --rm -p 3010:3010 \
