@@ -73,7 +73,20 @@ COPY --from=backend-builder /app/dist ./dist
 # else (kopia repo, rclone.conf, install-id) is created on demand under it.
 RUN mkdir -p /data
 
+# HOME=/data so kopia and rclone find a writable home regardless of the
+# uid the runtime starts the container under. signalk-container emits
+# `--user <hostUid>:<hostGid>` on rootful podman / docker and `--userns=
+# keep-id` on rootless podman; under the former, the container process
+# does not own / and the default HOME (which would be /root or unset
+# entirely without a passwd entry for the host uid) is read-only, so
+# `kopia` falls back to `/app/.cache` and explodes ("mkdir /app/.cache:
+# permission denied"). Pointing HOME at the bind-mounted DATA_DIR makes
+# `~/.cache`, `~/.config`, `~/.kopia` etc. resolve to the bind mount
+# (which is always writable by the runtime uid because the host directory
+# is owned by the same user). Image stays uid-agnostic; no USER directive
+# or chown sweeps needed.
 ENV NODE_ENV=production \
+    HOME=/data \
     PORT=3010 \
     DATA_DIR=/data \
     SIGNALK_DATA_PATH=/signalk-data \
