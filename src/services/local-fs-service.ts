@@ -18,6 +18,13 @@ export const LOCAL_BASELINE_MOUNTS: ReadonlyArray<{ container: string; host: str
   { container: '/host-mnt', host: '/mnt' },
 ];
 
+// Shared by status + validate so both surfaces give the user the same actionable instructions.
+const EACCES_HINT =
+  'directory exists but is not writable by the backup engine ' +
+  '(usually because it was created as root). ' +
+  'Either create the directory as the Signal K user, or have an ' +
+  'administrator run `chown` on it for that user, then retry.';
+
 export interface LocalCandidate {
   /** Container-side absolute path (what gets persisted in settings.cloudSync). */
   containerPath: string;
@@ -27,6 +34,8 @@ export interface LocalCandidate {
   freeBytes: number | null;
   /** Total bytes on the filesystem the path lives on, or null if unknown. */
   totalBytes: number | null;
+  /** False for read-only / wrong-owner candidates the UI should grey out. */
+  writable: boolean;
 }
 
 export interface LocalStatus {
@@ -92,7 +101,7 @@ class LocalFsService {
         code === 'ENOENT'
           ? 'path does not exist (drive unplugged or unmounted?)'
           : code === 'EACCES'
-            ? 'path is not writable'
+            ? EACCES_HINT
             : (err as Error).message;
       return { connected: false, configured: true, containerPath, hostPath, error };
     }
@@ -140,7 +149,16 @@ class LocalFsService {
           // statfs is non-critical; surface the candidate without sizes.
         }
 
-        candidates.push({ containerPath, hostPath, freeBytes, totalBytes });
+        // Surface non-writable candidates so the UI can disable them instead of failing at submit.
+        let writable = false;
+        try {
+          await access(containerPath, fsConstants.W_OK);
+          writable = true;
+        } catch {
+          // best-effort probe; default `writable=false` is fine
+        }
+
+        candidates.push({ containerPath, hostPath, freeBytes, totalBytes, writable });
       }
     }
 
@@ -193,7 +211,7 @@ class LocalFsService {
       return null;
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'EACCES') return 'path is not writable';
+      if (code === 'EACCES') return EACCES_HINT;
       return (err as Error).message;
     }
   }
