@@ -27,6 +27,15 @@ export interface LocalCandidate {
   freeBytes: number | null;
   /** Total bytes on the filesystem the path lives on, or null if unknown. */
   totalBytes: number | null;
+  /**
+   * True when the backup-engine process can write to this directory.
+   * False for read-only media (CD-ROM) and directories owned by a user
+   * other than the engine's runtime uid (e.g. root-owned subdirs of
+   * `/mnt/` created by a sysadmin without further chown). UI uses this
+   * to grey out the entry and explain why instead of letting the user
+   * pick something that will fail at submit time.
+   */
+  writable: boolean;
 }
 
 export interface LocalStatus {
@@ -140,7 +149,19 @@ class LocalFsService {
           // statfs is non-critical; surface the candidate without sizes.
         }
 
-        candidates.push({ containerPath, hostPath, freeBytes, totalBytes });
+        // Probe writability so the UI can disable non-writable picks
+        // (CD-ROM, root-owned, FAT mounted read-only, …) instead of
+        // letting the user discover the problem at submit time.
+        let writable = false;
+        try {
+          await access(containerPath, fsConstants.W_OK);
+          writable = true;
+        } catch {
+          // Non-writable — surface the candidate but flag it so the UI
+          // can render it as a disabled option.
+        }
+
+        candidates.push({ containerPath, hostPath, freeBytes, totalBytes, writable });
       }
     }
 
@@ -193,7 +214,19 @@ class LocalFsService {
       return null;
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'EACCES') return 'path is not writable';
+      if (code === 'EACCES') {
+        // The directory exists but the backup-engine process can't
+        // write to it. Most common cause: a sysadmin created the dir
+        // with `sudo mkdir /mnt/foo` and left it root-owned. Spell that
+        // out plus the fix instead of leaving the user with a bare
+        // "not writable".
+        return (
+          'directory exists but is not writable by the backup engine ' +
+          '(usually because it was created as root). ' +
+          'Either create the directory as the Signal K user, or have an ' +
+          'administrator run `chown` on it for that user, then retry.'
+        );
+      }
       return (err as Error).message;
     }
   }
