@@ -8,13 +8,19 @@ You normally don't run this container directly — install the [signalk-backup](
 
 - **Snapshot** SignalK config files (and optionally history) using [Kopia](https://kopia.io/) — content-addressable, deduplicated, encrypted at rest
 - **Schedule** hourly / daily / weekly / startup tiers with independent retention
-- **Sync** to Google Drive via [rclone](https://rclone.org/) with `drive.file` scope (the app only sees files it created)
+- **Sync** to a local destination (USB drive, NAS, any mounted volume) or to Google Drive via [rclone](https://rclone.org/) with `drive.file` scope (the app only sees files it created)
 - **Restore** with safety-backup rollback (every restore creates a snapshot of current state first)
-- **Expose** an Express HTTP API + a Vite React UI on a single port (default 3010)
+- **Expose** an Express HTTP API (default port 3010). Headless — the user-facing UI is the [signalk-backup](https://github.com/dirkwa/signalk-backup) plugin's webapp, mounted into SignalK at `/signalk-backup/`
 
 ## Image
 
-`ghcr.io/dirkwa/signalk-backup-server:<version>` (multi-arch: linux/amd64, linux/arm64)
+`ghcr.io/dirkwa/signalk-backup-server` (multi-arch: linux/amd64, linux/arm64).
+
+Tags:
+
+- `:latest` — current stable release. What the signalk-backup plugin pulls when `imageTag` is omitted.
+- `:X.Y.Z` — pinned stable release (e.g. `:0.3.0`).
+- `:X.Y.Z-beta.N` — prereleases for opt-in testing. Not promoted to `:latest`. Testers set `imageTag` explicitly in the plugin config.
 
 ## Configuration (env)
 
@@ -28,8 +34,9 @@ The signalk-backup plugin sets all of these for you. Listed here for reference /
 | `SIGNALK_VERSION`   | `unknown`               | SignalK server version (used to tag backups). Plugin reads from ServerAPI and forwards.                                                                              |
 | `GUI_PUBLIC_URL`    | (computed from request) | Public URL the user's browser uses to reach the UI. Plugin sets this from `signalk-container.resolveContainerAddress`.                                               |
 | `LOG_LEVEL`         | `info`                  | Pino log level: trace/debug/info/warn/error/fatal                                                                                                                    |
-| `NODE_ENV`          | `production`            | Pino-pretty in `development`                                                                                                                                         |
+| `NODE_ENV`          | `production`            | Set to `development` for pretty-printed pino logs                                                                                                                    |
 | `MAX_UPLOAD_SIZE`   | `1073741824` (1 GB)     | Cap on ZIP imports                                                                                                                                                   |
+| `HOME`              | `/data`                 | Home directory for kopia and rclone (`~/.cache`, `~/.config`). Defaults to `DATA_DIR` so child processes find a writable home regardless of the runtime uid.         |
 
 ## API
 
@@ -81,8 +88,21 @@ docker buildx build --platform linux/amd64,linux/arm64 -t signalk-backup-server:
 
 ```bash
 npm install
-cd src/ui && npm install && cd ../..
-npm run dev          # tsx watch + Vite UI build is separate (cd src/ui && npm run dev)
+npm run dev          # tsx watch on src/server.ts — restarts on every edit
+```
+
+The dev server listens on `PORT` (default 3010). It's an API-only Express app — the user-facing UI lives in the [signalk-backup](https://github.com/dirkwa/signalk-backup) plugin's webapp, so iterating on UI is a separate workflow over there.
+
+For quick API probing while developing:
+
+- Swagger UI: <http://localhost:3010/api/docs>
+- OpenAPI JSON: <http://localhost:3010/api/openapi.json>
+
+Lint/format/test:
+
+```bash
+npm run format       # prettier --write + eslint --fix
+npm run build:all    # lint + tsc + vitest
 ```
 
 ## License
@@ -93,5 +113,5 @@ Apache-2.0
 
 - [Kopia](https://kopia.io/) — backup engine
 - [rclone](https://rclone.org/) — cloud transport
-- Container base: [Wolfi](https://wolfi.dev/) (Chainguard) — glibc, security-hardened
+- Container base: [Wolfi](https://wolfi.dev/) (Chainguard) — minimal, security-hardened Linux distribution
 - Origin: extracted from [signalk-universal-installer/keeper](https://github.com/signalk/signalk-universal-installer/tree/main/keeper) (Apache-2.0)
