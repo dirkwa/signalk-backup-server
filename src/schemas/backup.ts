@@ -167,6 +167,59 @@ export const retentionSchema = Type.Object(
   }
 );
 
+/** Path inside a snapshot, relative to its root. Empty string = snapshot
+ *  root. We let the path string itself be loose here — deeper validation
+ *  (".." segments, NUL bytes, reject-list) lives in the wrapper layer so
+ *  the same checks apply to non-HTTP callers. */
+const snapshotPath = Type.String({
+  maxLength: 4096,
+  description: 'Path inside the snapshot, relative to its root. Empty = root.',
+});
+
+/**
+ * Query schema for GET /api/backups/:id/tree and /:id/download-subtree.
+ * `path` defaults to '' (snapshot root) when omitted.
+ */
+export const snapshotPathQuerySchema = Type.Object(
+  {
+    path: Type.Optional(snapshotPath),
+  },
+  {
+    $id: 'SnapshotPathQuery',
+    description: 'Path inside a snapshot, relative to its root.',
+  }
+);
+
+/**
+ * Schema for POST /api/backups/:id/restore-partial.
+ */
+export const partialRestoreSchema = Type.Object(
+  {
+    sourcePath: snapshotPath,
+    targetMode: Type.Union([Type.Literal('original'), Type.Literal('custom')], {
+      description:
+        'original = signalkDataPath/<sourcePath>; custom = customPath under signalkDataPath.',
+    }),
+    customPath: Type.Optional(
+      Type.String({
+        maxLength: 4096,
+        description: 'Required when targetMode is "custom". Must resolve under signalkDataPath.',
+      })
+    ),
+    confirmOverwrite: Type.Optional(
+      Type.Boolean({
+        description:
+          'Set to true to overwrite an existing target. Without it, the server returns 409 + existing-entry metadata so the UI can show a confirmation diff.',
+      })
+    ),
+  },
+  {
+    $id: 'PartialRestoreRequest',
+    description: 'Restore a single file or directory from a snapshot.',
+    additionalProperties: false,
+  }
+);
+
 /** Inferred types for use in route handlers */
 export type CreateBackupInput = Static<typeof createBackupSchema>;
 export type BackupIdParam = Static<typeof backupIdParamSchema>;
@@ -174,3 +227,5 @@ export type UploadQuery = Static<typeof uploadQuerySchema>;
 export type EstimateQuery = Static<typeof estimateQuerySchema>;
 export type ChangePasswordInput = Static<typeof changePasswordSchema>;
 export type RetentionInput = Static<typeof retentionSchema>;
+export type SnapshotPathQuery = Static<typeof snapshotPathQuerySchema>;
+export type PartialRestoreInput = Static<typeof partialRestoreSchema>;
