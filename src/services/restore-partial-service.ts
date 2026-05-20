@@ -94,11 +94,8 @@ export async function resolvePartialTarget(
 
   let rawTarget: string;
   if (targetMode === 'original') {
-    // Reject-list only fires for original-location restores — those
-    // overwrite the live tree and would silently break the running
-    // server (a stale package.json needs npm install, etc.). Restoring
-    // to a custom path is just a copy the user inspects, so the
-    // side-effect concerns don't apply.
+    // Reject-list only applies to original-mode restores; custom-mode is
+    // a copy the user inspects, so npm-install / .kopia concerns don't apply.
     for (const { pattern, reason } of REJECT_SOURCE_PATHS) {
       if (pattern.test(sourcePath)) {
         throw new PartialRestoreError(reason, 'RESTORE_NEEDS_FULL');
