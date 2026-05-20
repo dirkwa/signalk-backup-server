@@ -1062,13 +1062,21 @@ api.get(
         const zipPath = `${tempDir}.zip`;
         const output = createWriteStream(zipPath);
         const archive = new ZipArchive({ zlib: { level: 9 } });
-        await new Promise<void>((resolve, reject) => {
-          output.on('close', resolve);
-          archive.on('error', reject);
-          archive.pipe(output);
-          archive.directory(tempDir, false);
-          archive.finalize();
-        });
+        try {
+          await new Promise<void>((resolve, reject) => {
+            output.on('close', resolve);
+            // Without 'error' on output, a disk-full or EACCES during
+            // write resolves never; reject so the catch below cleans up.
+            output.on('error', reject);
+            archive.on('error', reject);
+            archive.pipe(output);
+            archive.directory(tempDir, false);
+            void archive.finalize();
+          });
+        } catch (zipBuildError) {
+          await rm(zipPath, { force: true }).catch(() => {});
+          throw zipBuildError;
+        }
 
         const safeName = lastSegment.replace(/[^A-Za-z0-9._-]/g, '_') || 'subtree';
         res.setHeader('Content-Type', 'application/zip');
