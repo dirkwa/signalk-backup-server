@@ -175,47 +175,54 @@ const snapshotPath = Type.String({
   description: 'Path inside the snapshot, relative to its root. Empty = root.',
 });
 
-/**
- * Query schema for GET /api/backups/:id/tree and /:id/download-subtree.
- * `path` defaults to '' (snapshot root) when omitted.
- */
 export const snapshotPathQuerySchema = Type.Object(
   {
     path: Type.Optional(snapshotPath),
   },
   {
     $id: 'SnapshotPathQuery',
-    description: 'Path inside a snapshot, relative to its root.',
+    description: 'Path inside a snapshot, relative to its root. Empty / omitted = root.',
   }
 );
 
-/**
- * Schema for POST /api/backups/:id/restore-partial.
- */
-export const partialRestoreSchema = Type.Object(
-  {
-    sourcePath: snapshotPath,
-    targetMode: Type.Union([Type.Literal('original'), Type.Literal('custom')], {
-      description:
-        'original = signalkDataPath/<sourcePath>; custom = customPath under signalkDataPath.',
-    }),
-    customPath: Type.Optional(
-      Type.String({
-        maxLength: 4096,
-        description: 'Required when targetMode is "custom". Must resolve under signalkDataPath.',
-      })
+const customPathString = Type.String({
+  maxLength: 4096,
+  description: 'Required when targetMode is "custom". Must resolve under signalkDataPath.',
+});
+
+const confirmOverwriteFlag = Type.Optional(
+  Type.Boolean({
+    description:
+      'Set to true to overwrite an existing target. Without it, the server returns 409 + existing-entry metadata so the UI can show a confirmation diff.',
+  })
+);
+
+// Discriminated union — customPath is required when targetMode is
+// 'custom' and rejected otherwise, so TypeBox catches the invariant at
+// the API boundary rather than letting it fail later inside the service.
+export const partialRestoreSchema = Type.Union(
+  [
+    Type.Object(
+      {
+        sourcePath: snapshotPath,
+        targetMode: Type.Literal('original'),
+        confirmOverwrite: confirmOverwriteFlag,
+      },
+      { additionalProperties: false }
     ),
-    confirmOverwrite: Type.Optional(
-      Type.Boolean({
-        description:
-          'Set to true to overwrite an existing target. Without it, the server returns 409 + existing-entry metadata so the UI can show a confirmation diff.',
-      })
+    Type.Object(
+      {
+        sourcePath: snapshotPath,
+        targetMode: Type.Literal('custom'),
+        customPath: customPathString,
+        confirmOverwrite: confirmOverwriteFlag,
+      },
+      { additionalProperties: false }
     ),
-  },
+  ],
   {
     $id: 'PartialRestoreRequest',
     description: 'Restore a single file or directory from a snapshot.',
-    additionalProperties: false,
   }
 );
 

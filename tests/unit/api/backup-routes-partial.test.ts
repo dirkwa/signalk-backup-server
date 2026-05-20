@@ -72,6 +72,48 @@ const { generateOpenApiDocument, setRoutePrefixByTag } = await import(
   '../../../src/api/openapi-registry.js'
 );
 
+describe('partialRestoreSchema (discriminated union)', () => {
+  it('accepts targetMode "original" without customPath', async () => {
+    const { Value } = await import('@sinclair/typebox/value');
+    const { partialRestoreSchema } = await import('../../../src/schemas/backup.js');
+    expect(
+      Value.Check(partialRestoreSchema, { sourcePath: 'settings.json', targetMode: 'original' })
+    ).toBe(true);
+  });
+
+  it('accepts targetMode "custom" WITH customPath', async () => {
+    const { Value } = await import('@sinclair/typebox/value');
+    const { partialRestoreSchema } = await import('../../../src/schemas/backup.js');
+    expect(
+      Value.Check(partialRestoreSchema, {
+        sourcePath: 'a.txt',
+        targetMode: 'custom',
+        customPath: 'sub/here.txt',
+      })
+    ).toBe(true);
+  });
+
+  it('rejects targetMode "custom" WITHOUT customPath', async () => {
+    const { Value } = await import('@sinclair/typebox/value');
+    const { partialRestoreSchema } = await import('../../../src/schemas/backup.js');
+    expect(
+      Value.Check(partialRestoreSchema, { sourcePath: 'a.txt', targetMode: 'custom' })
+    ).toBe(false);
+  });
+
+  it('rejects targetMode "original" with stray customPath', async () => {
+    const { Value } = await import('@sinclair/typebox/value');
+    const { partialRestoreSchema } = await import('../../../src/schemas/backup.js');
+    expect(
+      Value.Check(partialRestoreSchema, {
+        sourcePath: 'a.txt',
+        targetMode: 'original',
+        customPath: '/some/path',
+      })
+    ).toBe(false);
+  });
+});
+
 describe('partialErrorStatus', () => {
   it.each<[PartialRestoreError['code'], number]>([
     ['INVALID_SOURCE', 400],

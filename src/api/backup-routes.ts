@@ -966,15 +966,8 @@ api.get(
   }
 );
 
-/**
- * GET /api/backups/:id/download-subtree?path=...
- *
- * Download a single file (raw bytes) or a directory (ZIP). Targets the
- * "QuestDB shards grow huge" pain in dirkwa/signalk-backup#30 — the
- * existing /download endpoint restores the WHOLE snapshot to /tmp
- * before zipping, so a user who just wants this week's parquet shards
- * pays the full-snapshot cost.
- */
+// Avoids the full-snapshot cost of /download when the user only wants
+// one sub-path (e.g. this week's QuestDB parquet shards).
 api.get(
   '/:id/download-subtree',
   {
@@ -1081,11 +1074,36 @@ api.get(
         res.setHeader('Content-Type', 'application/zip');
         res.setHeader('Content-Disposition', `attachment; filename="${safeName}.zip"`);
         const stream = createReadStream(zipPath);
-        stream.on('end', () => {
+        // Cleanup must run on every terminal outcome: normal end, stream
+        // error, or client abort (res 'close'). Without all three, an
+        // aborted download leaves <tempDir>.zip behind forever.
+        let zipCleaned = false;
+        const cleanupZip = (): void => {
+          if (zipCleaned) return;
+          zipCleaned = true;
           try {
             unlinkSync(zipPath);
           } catch {
             // best-effort cleanup
+          }
+        };
+        stream.on('end', cleanupZip);
+        stream.on('error', (err: Error) => {
+          logger.error({ err, backupId, subPath }, 'subtree zip stream error');
+          stream.destroy();
+          cleanupZip();
+          if (!res.headersSent) {
+            res.status(500).end();
+          } else {
+            res.end();
+          }
+        });
+        res.on('close', () => {
+          // Client disconnect — abort the read stream so 'end' doesn't
+          // fire on a half-read file; cleanup handles deletion.
+          if (!zipCleaned) {
+            stream.destroy();
+            cleanupZip();
           }
         });
         stream.pipe(res);
@@ -1117,10 +1135,6 @@ api.get(
   }
 );
 
-/**
- * POST /api/backups/:id/restore-partial
- * Restore a single file or sub-directory.
- */
 api.post(
   '/:id/restore-partial',
   {
