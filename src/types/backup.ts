@@ -246,6 +246,103 @@ export interface BackupSizeEstimate {
   warning?: string;
 }
 
+/** Partial-restore operation status. Distinct from RestoreStatus because
+ *  partial restore skips the npm-install / SignalK-restart phases — for a
+ *  single file or directory those don't apply. */
+export type PartialRestoreStatus =
+  | 'idle'
+  | 'preparing'
+  | 'safety_snapshotting'
+  | 'extracting'
+  | 'verifying'
+  | 'completed'
+  | 'failed'
+  | 'rolling_back'
+  | 'rolled_back';
+
+/** Where the restored sub-path should land. */
+export type PartialRestoreTargetMode = 'original' | 'custom';
+
+/** Partial-restore request payload. */
+export interface PartialRestoreRequest {
+  /** Sub-path inside the snapshot, relative to the snapshot root. */
+  sourcePath: string;
+  /** 'original' = signalkDataPath/<sourcePath>; 'custom' = customPath verbatim. */
+  targetMode: PartialRestoreTargetMode;
+  /** Required when targetMode === 'custom'. Must resolve under signalkDataPath. */
+  customPath?: string;
+  /** Set to true to overwrite an existing destination. Without it, the
+   *  service returns 409 with the existing-entry metadata so the UI can
+   *  show a confirmation diff and the user can resubmit. */
+  confirmOverwrite?: boolean;
+}
+
+export interface PartialRestoreContext {
+  backupId: string | null;
+  sourcePath: string | null;
+  targetPath: string | null;
+  safetyBackupId: string | null;
+  progress: number;
+  statusMessage: string;
+  error: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export const initialPartialRestoreContext: PartialRestoreContext = {
+  backupId: null,
+  sourcePath: null,
+  targetPath: null,
+  safetyBackupId: null,
+  progress: 0,
+  statusMessage: '',
+  error: null,
+  startedAt: null,
+  completedAt: null,
+};
+
+export type PartialRestoreEvent =
+  | {
+      type: 'START_RESTORE';
+      backupId: string;
+      sourcePath: string;
+      targetPath: string;
+    }
+  | { type: 'PROGRESS'; progress: number; statusMessage: string }
+  | { type: 'SAFETY_SNAPSHOT_CREATED'; safetyBackupId: string }
+  | { type: 'PREPARE_COMPLETE' }
+  | { type: 'EXTRACT_COMPLETE' }
+  | { type: 'VERIFY_SUCCESS' }
+  | { type: 'ERROR'; error: string }
+  | { type: 'ROLLBACK' }
+  | { type: 'ROLLBACK_COMPLETE' }
+  | { type: 'RESET' };
+
+export interface PartialRestoreProgress {
+  state: PartialRestoreStatus;
+  progress: number;
+  statusMessage: string;
+  error?: string;
+  backupId?: string;
+  sourcePath?: string;
+  targetPath?: string;
+}
+
+export interface PartialRestoreResult {
+  success: boolean;
+  backupId: string;
+  sourcePath: string;
+  targetPath: string;
+  error?: string;
+  /** Set when 409 should be returned because the target already exists.
+   *  The route handler surfaces this to the UI so the user can confirm. */
+  conflict?: {
+    existingTargetMtime: string | null;
+    existingTargetSize: number | null;
+  };
+  duration?: number;
+}
+
 /** Kopia repository statistics */
 export interface RepositoryStats {
   /** Total repository size on disk in bytes */
