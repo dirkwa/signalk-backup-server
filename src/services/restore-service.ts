@@ -7,6 +7,7 @@ import { writeFile, readFile } from 'fs/promises';
 import { restoreMachine } from './backup-machine.js';
 import { backupService } from './backup-service.js';
 import { kopiaClient } from './kopia-client.js';
+import { isAnyRestoreActive, registerRestoreActiveProbe } from './restore-lock.js';
 import { config } from '../config/index.js';
 import { logger as rootLogger } from './logger.js';
 import type { RestoreContext, RestoreStatus, BackupMetadata } from '../types/backup.js';
@@ -42,7 +43,10 @@ class RestoreService {
     backupId: string,
     onProgress?: (progress: RestoreProgress) => void
   ): Promise<RestoreResult> {
-    if (this.isRestoring()) {
+    // Consult the shared lock so a partial restore in progress blocks a
+    // full restore (and vice versa). isRestoring() below is the
+    // full-restore self-check; isAnyRestoreActive() covers cross-service.
+    if (this.isRestoring() || isAnyRestoreActive()) {
       return {
         success: false,
         backupId,
@@ -381,3 +385,4 @@ class RestoreService {
 }
 
 export const restoreService = new RestoreService();
+registerRestoreActiveProbe(() => restoreService.isRestoring());
