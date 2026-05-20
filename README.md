@@ -9,7 +9,8 @@ You normally don't run this container directly — install the [signalk-backup](
 - **Snapshot** SignalK config files (and optionally history) using [Kopia](https://kopia.io/) — content-addressable, deduplicated, encrypted at rest
 - **Schedule** hourly / daily / weekly / startup tiers with independent retention
 - **Sync** to a local destination (USB drive, NAS, any mounted volume) or to Google Drive via [rclone](https://rclone.org/) with `drive.file` scope (the app only sees files it created)
-- **Restore** with safety-backup rollback (every restore creates a snapshot of current state first)
+- **Restore** with safety-backup rollback — every full restore creates a snapshot of current state first; partial restores stash the existing target before overwriting
+- **Selective restore** — browse any snapshot's file tree (`GET /api/backups/:id/tree`), download a single file or whole subdirectory (`/download-subtree`), or restore one sub-path in-place under signalkDataPath (`/restore-partial`). The plugin's host-side writer handles restores to arbitrary host paths outside the container's view
 - **Expose** an Express HTTP API (default port 3010). Headless — the user-facing UI is the [signalk-backup](https://github.com/dirkwa/signalk-backup) plugin's webapp, mounted into SignalK at `/signalk-backup/`
 
 ## Image
@@ -18,8 +19,8 @@ You normally don't run this container directly — install the [signalk-backup](
 
 Tags:
 
-- `:latest` — current stable release. What the signalk-backup plugin pulls when `imageTag` is omitted.
-- `:X.Y.Z` — pinned stable release (e.g. `:0.3.0`).
+- `:X.Y.Z` — pinned stable release (e.g. `:0.4.0`). The signalk-backup plugin's default `imageTag: "auto"` resolves to the `BACKUP_SERVER_VERSION` constant hard-coded in [signalk-backup/src/config/image-tag.ts](https://github.com/dirkwa/signalk-backup/blob/main/src/config/image-tag.ts), so a plugin release pins a known-good server version. Plugin and server are released independently — bumping that constant is a deliberate act in its own PR.
+- `:latest` — floating tag pointing at the most recent stable release. Users can set `imageTag: "latest"` to follow the freshest server release without changing the plugin.
 - `:X.Y.Z-beta.N` — prereleases for opt-in testing. Not promoted to `:latest`. Testers set `imageTag` explicitly in the plugin config.
 
 ## Configuration (env)
@@ -42,16 +43,18 @@ The signalk-backup plugin sets all of these for you. Listed here for reference /
 
 All routes mounted under `/api/`. Full OpenAPI spec at `/api/openapi.json` and Swagger UI at `/api/docs`.
 
-| Group      | Notable routes                                                                                                                                                                      |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Backups    | `GET /api/backups`, `POST /api/backups`, `GET /api/backups/:id`, `DELETE /api/backups/:id`, `POST /api/backups/:id/restore`, `POST /api/backups/upload`                             |
-| Scheduler  | `GET /api/backups/scheduler`, `POST /api/backups/scheduler/start`, `POST /api/backups/scheduler/stop`                                                                               |
-| Cloud sync | `GET /api/cloud/status`, `POST /api/cloud/sync`, `GET /api/cloud/installs`, `POST /api/cloud/restore/prepare`, `POST /api/cloud/restore/start`, `POST /api/cloud/restore/reset`     |
-| GDrive     | `POST /api/cloud/gdrive/connect`, `POST /api/cloud/gdrive/disconnect`, `POST /api/cloud/gdrive/auth-state`, `POST /api/cloud/gdrive/auth-callback`, `POST /api/cloud/gdrive/cancel` |
-| Settings   | `GET /api/settings`, `PUT /api/settings`                                                                                                                                            |
-| Operations | `GET /api/operations`, `GET /api/operations/:id`                                                                                                                                    |
-| Health     | `GET /api/health`                                                                                                                                                                   |
-| GUI URL    | `GET /api/gui-url`                                                                                                                                                                  |
+| Group               | Notable routes                                                                                                                                                                          |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Backups             | `GET /api/backups`, `POST /api/backups`, `GET /api/backups/:id`, `DELETE /api/backups/:id`, `POST /api/backups/:id/restore`, `POST /api/backups/upload`, `GET /api/backups/:id/download` |
+| Selective restore   | `GET /api/backups/:id/tree`, `GET /api/backups/:id/download-subtree`, `POST /api/backups/:id/restore-partial`                                                                            |
+| Partial-restore SSE | `GET /api/backups/restore-partial/status`, `GET .../stream`, `POST .../reset`                                                                                                           |
+| Scheduler           | `GET /api/backups/scheduler`, `POST /api/backups/scheduler/start`, `POST /api/backups/scheduler/stop`                                                                                   |
+| Cloud sync          | `GET /api/cloud/status`, `POST /api/cloud/sync`, `GET /api/cloud/installs`, `POST /api/cloud/restore/prepare`, `POST /api/cloud/restore/start`, `POST /api/cloud/restore/reset`          |
+| GDrive              | `POST /api/cloud/gdrive/connect`, `POST /api/cloud/gdrive/disconnect`, `POST /api/cloud/gdrive/auth-state`, `POST /api/cloud/gdrive/auth-callback`, `POST /api/cloud/gdrive/cancel`      |
+| Settings            | `GET /api/settings`, `PUT /api/settings`                                                                                                                                                |
+| Operations          | `GET /api/operations`, `GET /api/operations/:id`                                                                                                                                        |
+| Health              | `GET /api/health`                                                                                                                                                                       |
+| GUI URL             | `GET /api/gui-url` *(legacy — the plugin's webapp now serves the user-facing UI; this route is kept for backwards compat with older signalk-backup releases)*                           |
 
 ## Direct run (debugging)
 
