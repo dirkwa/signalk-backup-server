@@ -69,7 +69,16 @@ export function validate(schemas: ValidationSchemas) {
             }))
           );
         } else {
-          req.query = Value.Default(schemas.query, req.query) as typeof req.query;
+          // Express 5 made req.query a getter-only property, so plain
+          // assignment throws. Define the property directly so routes
+          // can still see TypeBox-defaulted values.
+          const defaulted = Value.Default(schemas.query, req.query) as typeof req.query;
+          Object.defineProperty(req, 'query', {
+            value: defaulted,
+            writable: true,
+            configurable: true,
+            enumerable: true,
+          });
         }
       }
 
