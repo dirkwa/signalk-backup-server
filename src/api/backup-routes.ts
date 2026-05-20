@@ -799,24 +799,11 @@ api.get(
   }
 );
 
-// =============================================================================
-// PARTIAL RESTORE (selective file/dir restore — signalk-backup#30)
-//
-// Routes for the issue dirkwa/signalk-backup#30 — let users browse a
-// snapshot's file tree, download a sub-path, and restore a single file
-// or directory either to its original location or to a custom path
-// under signalkDataPath. The XState machine + path-safety guard live in
-// restore-partial-service; this file is just the HTTP surface.
-//
-// MUST be registered BEFORE the parameterised /:id/restore, /:id/download,
-// /:id routes below — Express matches in registration order and a path
-// like /xyz/restore-partial would otherwise be captured by /:id.
-// =============================================================================
+// Partial-restore routes (signalk-backup#30) MUST be registered before the
+// parameterised /:id/* routes below — Express matches in order, so a path
+// like /restore-partial/status would otherwise be captured by /:id.
 
-/**
- * GET /api/backups/restore-partial/status
- * Current partial-restore status (mirrors /restore/status for the full restore).
- */
+// GET /api/backups/restore-partial/status — mirrors /restore/status.
 api.get(
   '/restore-partial/status',
   {

@@ -17,3 +17,6 @@ npm-debug.log*
 .env
 .env.local
 .env.*.local
+
+# Local CodeRabbit review artifacts (saved per workflow rule).
+cr-review*.txt

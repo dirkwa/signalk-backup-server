@@ -91,7 +91,7 @@ describe('partial-restore route registration', () => {
   // If a route handler is wired without going through createApiRouter the
   // OpenAPI doc would drift — this guards against that for the new routes.
 
-  it('registers the four new partial-restore routes in OpenAPI', () => {
+  it('registers the six new partial-restore routes in OpenAPI', () => {
     // backupRouter is imported above just to side-effect-register routes
     // with the OpenAPI registry; reference it so the import isn't dropped.
     expect(backupRouter).toBeDefined();

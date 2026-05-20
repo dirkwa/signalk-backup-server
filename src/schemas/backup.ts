@@ -167,10 +167,9 @@ export const retentionSchema = Type.Object(
   }
 );
 
-/** Path inside a snapshot, relative to its root. Empty string = snapshot
- *  root. We let the path string itself be loose here — deeper validation
- *  (".." segments, NUL bytes, reject-list) lives in the wrapper layer so
- *  the same checks apply to non-HTTP callers. */
+// Loose here on purpose — deeper validation (".." segments, NUL bytes,
+// reject-list) lives in restore-partial-service so the same checks apply
+// to non-HTTP callers too.
 const snapshotPath = Type.String({
   maxLength: 4096,
   description: 'Path inside the snapshot, relative to its root. Empty = root.',
