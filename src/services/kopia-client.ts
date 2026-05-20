@@ -517,20 +517,41 @@ class KopiaClient {
     });
 
     let stderrBuf = '';
+    let timedOut = false;
+    let settled = false;
+    // Match the rest of the wrapper: kopia subprocesses always have a
+    // ceiling. Without this a hung kopia leaves the HTTP response open
+    // until the client disconnects (or forever, for in-process callers).
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+    }, DEFAULT_TIMEOUT_MS);
+
+    const settle = (err?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (err) child.stdout.destroy(err);
+    };
+
     child.stderr.on('data', (chunk: Buffer) => {
       stderrBuf += chunk.toString();
     });
 
     child.on('close', (code) => {
-      if (code !== 0) {
+      if (timedOut) {
+        settle(new Error('kopia show timed out'));
+      } else if (code !== 0) {
         const msg = stderrBuf.trim() || `kopia show exited with code ${code}`;
         // Emit via the stdout stream so the consumer's error handler runs.
-        child.stdout.destroy(new Error(msg));
+        settle(new Error(msg));
+      } else {
+        settle();
       }
     });
 
     child.on('error', (err) => {
-      child.stdout.destroy(err);
+      settle(err);
     });
 
     return child.stdout;

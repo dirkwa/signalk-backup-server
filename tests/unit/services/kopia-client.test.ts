@@ -212,8 +212,17 @@ describe('KopiaClient', () => {
 
       const entries = parseKopiaLsOutput(stdout);
       expect(entries).toHaveLength(3);
-      expect(entries[0]).toMatchObject({ name: 'sub1', isDir: true, size: 2 });
-      expect(entries[1]).toMatchObject({ name: 'sub2', isDir: true });
+      expect(entries[0]).toMatchObject({
+        name: 'sub1',
+        isDir: true,
+        size: 2,
+        objectId: 'kadab80b7098d78380aef84185c8b2e55',
+      });
+      expect(entries[1]).toMatchObject({
+        name: 'sub2',
+        isDir: true,
+        objectId: 'kfcf36854930fb9b69c0169fb1289ab2b',
+      });
       expect(entries[2]).toMatchObject({
         name: 'top.txt',
         isDir: false,
@@ -364,7 +373,7 @@ describe('KopiaClient', () => {
     });
 
     it('rejects subPath with NUL byte', async () => {
-      await expect(kopiaClient.listSnapshotEntries('snap', 'a b')).rejects.toThrow(/NUL/);
+      await expect(kopiaClient.listSnapshotEntries('snap', 'a\u0000b')).rejects.toThrow(/NUL/);
     });
   });
 
@@ -467,6 +476,41 @@ describe('KopiaClient', () => {
       ).rejects.toThrow(/went wrong|exited with code 1/);
       // Ensure stdout was the one destroyed (not just stderr).
       expect(stdout.destroyed).toBe(true);
+    });
+
+    it('kills the child and surfaces a timeout error after the default timeout', async () => {
+      vi.useFakeTimers();
+      try {
+        const { child, stdout } = makeFakeChild();
+        const killSpy = vi.fn((_signal?: string) => {
+          // Mirror real spawn: kill triggers close shortly after.
+          setImmediate(() => child.emit('close', null));
+          return true;
+        });
+        Object.assign(child, { kill: killSpy });
+
+        const mockedSpawn = vi.mocked(spawn);
+        mockedSpawn.mockImplementation(((_cmd: string, _args: readonly string[]) => {
+          return child as unknown as ReturnType<typeof spawn>;
+        }) as never);
+
+        const stream = kopiaClient.showFileByObjectId('slow');
+        // Capture the error before advancing timers — otherwise the
+        // 'error' event fires before any listener (or async iterator) is
+        // attached and surfaces as an unhandled rejection.
+        const errPromise = new Promise<Error>((resolve) => {
+          stream.once('error', resolve);
+        });
+
+        // Default timeout is 10 minutes; advance past it.
+        await vi.advanceTimersByTimeAsync(10 * 60 * 1000 + 100);
+        const err = await errPromise;
+        expect(err.message).toMatch(/timed out/);
+        expect(killSpy).toHaveBeenCalledWith('SIGTERM');
+        expect(stdout.destroyed).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });
