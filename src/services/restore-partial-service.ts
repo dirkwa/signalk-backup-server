@@ -90,16 +90,17 @@ export async function resolvePartialTarget(
     );
   }
 
-  for (const { pattern, reason } of REJECT_SOURCE_PATHS) {
-    if (pattern.test(sourcePath)) {
-      throw new PartialRestoreError(reason, 'RESTORE_NEEDS_FULL');
-    }
-  }
-
   const root = await safeRealpath(options.signalkDataPath);
 
   let rawTarget: string;
   if (targetMode === 'original') {
+    // Reject-list only applies to original-mode restores; custom-mode is
+    // a copy the user inspects, so npm-install / .kopia concerns don't apply.
+    for (const { pattern, reason } of REJECT_SOURCE_PATHS) {
+      if (pattern.test(sourcePath)) {
+        throw new PartialRestoreError(reason, 'RESTORE_NEEDS_FULL');
+      }
+    }
     rawTarget = join(root, sourcePath);
   } else {
     if (!customPath) {
