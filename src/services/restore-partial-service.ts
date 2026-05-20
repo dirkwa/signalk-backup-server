@@ -112,11 +112,15 @@ export async function resolvePartialTarget(
     if (customPath.includes('\0')) {
       throw new PartialRestoreError('customPath must not contain NUL bytes', 'INVALID_TARGET');
     }
-    // Trailing slash = "this is a directory" intent. Append the source's
-    // basename so a file restore to "tmp/" produces "tmp/<filename>"
-    // instead of overwriting "tmp" as a file.
+    // Trailing slash means "into this directory" — append source basename
+    // so `tmp/` + file `package.json` lands at `tmp/package.json` and not
+    // a regular file named `tmp`.
     const explicitDir = /[/\\]$/.test(customPath);
-    const baseCustom = explicitDir ? customPath.replace(/[/\\]+$/, '') : customPath;
+    const stripped = explicitDir ? customPath.replace(/[/\\]+$/, '') : customPath;
+    // Stripping trailing slashes from absolute "/" leaves "" which would
+    // re-route into signalkDataPath — preserve the original input there.
+    const baseCustom =
+      explicitDir && stripped === '' && isAbsolute(customPath) ? customPath : stripped;
     const joined = isAbsolute(baseCustom) ? baseCustom : join(root, baseCustom);
     rawTarget = explicitDir ? join(joined, basename(sourcePath)) : joined;
   }
