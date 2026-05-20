@@ -1,6 +1,7 @@
 import { execFile as execFileCb, spawn } from 'child_process';
 import { promisify } from 'util';
 import { mkdir } from 'fs/promises';
+import { Readable } from 'stream';
 import path from 'path';
 import { config } from '../config/index.js';
 import { logger as rootLogger } from './logger.js';
@@ -77,6 +78,32 @@ export interface KopiaRestoreProgress {
   /** e.g., "86.5 MB" */
   restoredSize: string;
   rawLine: string;
+}
+
+export interface KopiaLsEntry {
+  name: string;
+  /** Bytes; for directories this is kopia's logical entry count, not subtree size. */
+  size: number;
+  /** ISO-8601 with offset, as emitted by kopia. */
+  mtime: string;
+  isDir: boolean;
+  /** Opaque kopia content/object ID — required to stream a file via `kopia show`. */
+  objectId: string;
+}
+
+// Thrown when a snapshot or sub-path inside it doesn't exist, so route
+// handlers can map to 404 instead of letting the generic kopia error
+// surface as 500. Listing a file path instead of a directory raises the
+// same error type — the message disambiguates.
+export class KopiaEntryNotFoundError extends Error {
+  constructor(
+    message: string,
+    public readonly snapshotId: string,
+    public readonly subPath: string
+  ) {
+    super(message);
+    this.name = 'KopiaEntryNotFoundError';
+  }
 }
 
 class KopiaClient {
@@ -398,6 +425,139 @@ class KopiaClient {
   }
 
   /**
+   * List one directory level inside a snapshot. `subPath` is relative to
+   * the snapshot root and may be empty (= snapshot root). Throws
+   * KopiaEntryNotFoundError when the path doesn't resolve to a directory
+   * inside the snapshot — including when subPath points at a file (kopia
+   * itself rejects this with "is not a directory object").
+   */
+  async listSnapshotEntries(snapshotId: string, subPath: string): Promise<KopiaLsEntry[]> {
+    const normalized = normalizeSubPath(subPath);
+    const target = normalized ? `${snapshotId}/${normalized}` : snapshotId;
+
+    let stdout: string;
+    try {
+      const result = await this.run(['ls', '-l', '--show-object-id', target], {
+        timeout: SHORT_TIMEOUT_MS,
+        json: false,
+      });
+      stdout = typeof result === 'string' ? result : '';
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (
+        /entry not found/i.test(message) ||
+        /is not a directory object/i.test(message) ||
+        /unable to parse ID/i.test(message)
+      ) {
+        throw new KopiaEntryNotFoundError(message, snapshotId, normalized);
+      }
+      throw err;
+    }
+
+    return parseKopiaLsOutput(stdout);
+  }
+
+  /**
+   * Restore a sub-path of a snapshot into `targetPath`. For directories
+   * targetPath is treated as the destination directory and is created if
+   * missing. For single files targetPath is the destination file path
+   * (kopia detects this from the source type). Pass `subPath = ''` to
+   * restore the whole snapshot — equivalent to restoreSnapshot but
+   * exposed here so partial restores share a single code path.
+   */
+  async restoreSubtree(
+    snapshotId: string,
+    subPath: string,
+    targetPath: string,
+    options: { overwrite?: boolean } = {}
+  ): Promise<void> {
+    const normalized = normalizeSubPath(subPath);
+    const source = normalized ? `${snapshotId}/${normalized}` : snapshotId;
+    const { overwrite = true } = options;
+
+    if (overwrite) {
+      // Both flags are needed: kopia would otherwise refuse to overwrite a
+      // pre-existing file or directory at targetPath.
+      await this.run(
+        ['snapshot', 'restore', source, targetPath, '--overwrite-files', '--overwrite-directories'],
+        { timeout: DEFAULT_TIMEOUT_MS, json: false }
+      );
+    } else {
+      await this.run(['snapshot', 'restore', source, targetPath], {
+        timeout: DEFAULT_TIMEOUT_MS,
+        json: false,
+      });
+    }
+
+    logger.info({ snapshotId, subPath: normalized, targetPath }, 'Subtree restored');
+  }
+
+  /**
+   * Stream a single file's raw bytes from the repository by its kopia
+   * object ID (obtained from listSnapshotEntries). Returns a Node Readable
+   * the caller pipes into an HTTP response or another stream. Use for
+   * download-only endpoints — partial restores go through restoreSubtree
+   * so kopia handles permissions and atomicity.
+   *
+   * Caller is responsible for terminating the response on stream error;
+   * we attach an `error` event so it surfaces instead of swallowing.
+   */
+  showFileByObjectId(objectId: string): Readable {
+    const env: Record<string, string> = {
+      ...(process.env as Record<string, string>),
+      KOPIA_CONFIG_PATH: this.configPathOverride ?? this.configPath,
+      KOPIA_PASSWORD: this.passwordOverride ?? this.password,
+    };
+
+    logger.debug({ objectId }, 'Streaming kopia show by objectId');
+
+    const child = spawn(this.binaryPath, ['show', objectId], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stderrBuf = '';
+    let timedOut = false;
+    let settled = false;
+    // Match the rest of the wrapper: kopia subprocesses always have a
+    // ceiling. Without this a hung kopia leaves the HTTP response open
+    // until the client disconnects (or forever, for in-process callers).
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+    }, DEFAULT_TIMEOUT_MS);
+
+    const settle = (err?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (err) child.stdout.destroy(err);
+    };
+
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderrBuf += chunk.toString();
+    });
+
+    child.on('close', (code) => {
+      if (timedOut) {
+        settle(new Error('kopia show timed out'));
+      } else if (code !== 0) {
+        const msg = stderrBuf.trim() || `kopia show exited with code ${code}`;
+        // Emit via the stdout stream so the consumer's error handler runs.
+        settle(new Error(msg));
+      } else {
+        settle();
+      }
+    });
+
+    child.on('error', (err) => {
+      settle(err);
+    });
+
+    return child.stdout;
+  }
+
+  /**
    * Run repository maintenance (garbage collection, compaction).
    * When force is true, uses --safety=none to skip the blob age check
    * and delete unreferenced blobs immediately.
@@ -514,6 +674,55 @@ function parseRestoreProgress(line: string): KopiaRestoreProgress | null {
   }
 
   return null;
+}
+
+// `kopia ls` rejects `..` itself with "entry not found", but reject up
+// front so the API surface returns a clean 400 rather than the kopia
+// error masquerading as 404. Trim leading/trailing slashes and collapse
+// runs of `/` — kopia handles them but normalization keeps logs readable.
+function normalizeSubPath(subPath: string): string {
+  if (!subPath) return '';
+  if (subPath.includes('\0')) {
+    throw new Error('subPath contains NUL byte');
+  }
+  const parts = subPath.split('/').filter((p) => p.length > 0);
+  if (parts.some((p) => p === '..')) {
+    throw new Error('subPath must not contain ".." segments');
+  }
+  return parts.join('/');
+}
+
+const LS_LINE_REGEX =
+  /^(\S+)\s+(\d+)\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\s+[+-]?\S+)?)\s+(\S+)\s+(.+)$/;
+
+// Parse the fixed-column output of `kopia ls -l --show-object-id`.
+// Example line:
+//   drwxrwxr-x            6 2026-05-20 16:32:37 +12 kfcf36854...  sub2/
+//   -rw-rw-r--      5242880 2026-05-20 16:35:59 +12 Ix923877cf... big.bin
+// The name column is everything after the objectId and may contain
+// spaces. Directory entries always end in a trailing `/`.
+export function parseKopiaLsOutput(stdout: string): KopiaLsEntry[] {
+  const entries: KopiaLsEntry[] = [];
+  for (const line of stdout.split('\n')) {
+    if (!line.trim()) continue;
+    const match = LS_LINE_REGEX.exec(line);
+    if (!match) {
+      logger.debug({ line }, 'Skipping unparseable kopia ls line');
+      continue;
+    }
+    const [, mode, sizeStr, mtimeRaw, objectId, nameRaw] = match;
+    const trimmedName = nameRaw!.replace(/\s+$/, '');
+    const isDir = mode!.startsWith('d') || trimmedName.endsWith('/');
+    const name = isDir ? trimmedName.replace(/\/+$/, '') : trimmedName;
+    entries.push({
+      name,
+      size: parseInt(sizeStr!, 10),
+      mtime: mtimeRaw!.trim(),
+      isDir,
+      objectId: objectId!,
+    });
+  }
+  return entries;
 }
 
 function parseSizeToBytes(sizeStr: string): number {
