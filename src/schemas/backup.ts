@@ -167,6 +167,65 @@ export const retentionSchema = Type.Object(
   }
 );
 
+// Loose here on purpose — deeper validation (".." segments, NUL bytes,
+// reject-list) lives in restore-partial-service so the same checks apply
+// to non-HTTP callers too.
+const snapshotPath = Type.String({
+  maxLength: 4096,
+  description: 'Path inside the snapshot, relative to its root. Empty = root.',
+});
+
+export const snapshotPathQuerySchema = Type.Object(
+  {
+    path: Type.Optional(snapshotPath),
+  },
+  {
+    $id: 'SnapshotPathQuery',
+    description: 'Path inside a snapshot, relative to its root. Empty / omitted = root.',
+  }
+);
+
+const customPathString = Type.String({
+  maxLength: 4096,
+  description: 'Required when targetMode is "custom". Must resolve under signalkDataPath.',
+});
+
+const confirmOverwriteFlag = Type.Optional(
+  Type.Boolean({
+    description:
+      'Set to true to overwrite an existing target. Without it, the server returns 409 + existing-entry metadata so the UI can show a confirmation diff.',
+  })
+);
+
+// Discriminated union — customPath is required when targetMode is
+// 'custom' and rejected otherwise, so TypeBox catches the invariant at
+// the API boundary rather than letting it fail later inside the service.
+export const partialRestoreSchema = Type.Union(
+  [
+    Type.Object(
+      {
+        sourcePath: snapshotPath,
+        targetMode: Type.Literal('original'),
+        confirmOverwrite: confirmOverwriteFlag,
+      },
+      { additionalProperties: false }
+    ),
+    Type.Object(
+      {
+        sourcePath: snapshotPath,
+        targetMode: Type.Literal('custom'),
+        customPath: customPathString,
+        confirmOverwrite: confirmOverwriteFlag,
+      },
+      { additionalProperties: false }
+    ),
+  ],
+  {
+    $id: 'PartialRestoreRequest',
+    description: 'Restore a single file or directory from a snapshot.',
+  }
+);
+
 /** Inferred types for use in route handlers */
 export type CreateBackupInput = Static<typeof createBackupSchema>;
 export type BackupIdParam = Static<typeof backupIdParamSchema>;
@@ -174,3 +233,5 @@ export type UploadQuery = Static<typeof uploadQuerySchema>;
 export type EstimateQuery = Static<typeof estimateQuerySchema>;
 export type ChangePasswordInput = Static<typeof changePasswordSchema>;
 export type RetentionInput = Static<typeof retentionSchema>;
+export type SnapshotPathQuery = Static<typeof snapshotPathQuerySchema>;
+export type PartialRestoreInput = Static<typeof partialRestoreSchema>;

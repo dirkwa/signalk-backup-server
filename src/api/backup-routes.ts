@@ -13,10 +13,11 @@
  */
 
 import { type Request, type Response } from 'express';
-import { createReadStream, unlinkSync } from 'fs';
-import { mkdir } from 'fs/promises';
+import { createReadStream, createWriteStream, unlinkSync } from 'fs';
+import { mkdir, rm } from 'fs/promises';
 import { join } from 'path';
 import multer from 'multer';
+import { ZipArchive } from 'archiver';
 
 import { config } from '../config/index.js';
 import { backupService } from '../services/backup-service.js';
@@ -24,6 +25,13 @@ import { backupScheduler } from '../services/backup-scheduler.js';
 import { cloudSyncService } from '../services/cloud-sync-service.js';
 import { settingsService } from '../services/settings-service.js';
 import { restoreService, type RestoreProgress } from '../services/restore-service.js';
+import { restorePartialService, PartialRestoreError } from '../services/restore-partial-service.js';
+import {
+  kopiaClient,
+  KopiaEntryNotFoundError,
+  type KopiaLsEntry,
+} from '../services/kopia-client.js';
+import { isAnyRestoreActive } from '../services/restore-lock.js';
 import { logger } from '../services/logger.js';
 import { createApiRouter } from './openapi-registry.js';
 import {
@@ -32,6 +40,9 @@ import {
   estimateQuerySchema,
   changePasswordSchema,
   retentionSchema,
+  partialRestoreSchema,
+  snapshotPathQuerySchema,
+  type PartialRestoreInput,
   type RetentionInput,
 } from '../schemas/index.js';
 import type { ApiResponse } from '../types/api.js';
@@ -40,6 +51,7 @@ import type {
   BackupMetadata,
   BackupRequest,
   BackupResult,
+  PartialRestoreProgress,
   SchedulerStatus,
   StorageStats,
   CleanupResult,
@@ -786,6 +798,477 @@ api.get(
     res.json(response);
   }
 );
+
+// Partial-restore routes (signalk-backup#30) MUST be registered before the
+// parameterised /:id/* routes below — Express matches in order, so a path
+// like /restore-partial/status would otherwise be captured by /:id.
+
+// GET /api/backups/restore-partial/status — mirrors /restore/status.
+api.get(
+  '/restore-partial/status',
+  {
+    summary: 'Get current partial-restore status',
+    description:
+      'Returns the current state and progress of any in-progress or recently completed partial restore.',
+    responses: {
+      200: { description: 'Partial-restore progress status' },
+    },
+  },
+  async (_req: Request, res: Response) => {
+    const progress = restorePartialService.getProgress();
+    const response: ApiResponse<PartialRestoreProgress> = {
+      success: true,
+      data: progress ?? {
+        state: 'idle',
+        progress: 0,
+        statusMessage: 'No partial restore in progress',
+      },
+      timestamp: new Date().toISOString(),
+    };
+    res.json(response);
+  }
+);
+
+/**
+ * GET /api/backups/restore-partial/stream
+ * SSE endpoint for real-time partial-restore progress.
+ */
+api.get(
+  '/restore-partial/stream',
+  {
+    summary: 'Stream partial-restore progress via SSE',
+    description:
+      'Server-Sent Events endpoint for real-time partial-restore progress. Polls every 500ms and closes automatically when the operation completes, fails, or is rolled back.',
+    responses: {
+      200: {
+        description: 'SSE stream of partial-restore progress events',
+        content: { 'text/event-stream': {} },
+      },
+    },
+  },
+  async (_req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const initial = restorePartialService.getProgress();
+    res.write(
+      `data: ${JSON.stringify(initial ?? { state: 'idle', progress: 0, statusMessage: 'No partial restore in progress' })}\n\n`
+    );
+
+    const intervalId = setInterval(() => {
+      const progress = restorePartialService.getProgress();
+      if (progress) {
+        res.write(`data: ${JSON.stringify(progress)}\n\n`);
+        if (
+          progress.state === 'completed' ||
+          progress.state === 'failed' ||
+          progress.state === 'rolled_back'
+        ) {
+          clearInterval(intervalId);
+          res.write(`data: ${JSON.stringify({ ...progress, done: true })}\n\n`);
+          res.end();
+        }
+      }
+    }, 500);
+
+    res.on('close', () => {
+      clearInterval(intervalId);
+    });
+  }
+);
+
+/**
+ * POST /api/backups/restore-partial/reset
+ * Reset the partial-restore state machine after a completed / failed run.
+ */
+api.post(
+  '/restore-partial/reset',
+  {
+    summary: 'Reset partial-restore state',
+    description:
+      'Resets the partial-restore state machine. Useful after a failed or completed operation to allow starting a new one.',
+    responses: {
+      200: { description: 'Partial-restore state reset' },
+    },
+  },
+  async (_req: Request, res: Response) => {
+    restorePartialService.reset();
+    const response: ApiResponse<{ message: string }> = {
+      success: true,
+      data: { message: 'Partial-restore state reset' },
+      timestamp: new Date().toISOString(),
+    };
+    res.json(response);
+  }
+);
+
+/**
+ * GET /api/backups/:id/tree?path=...
+ * List one directory level inside a snapshot. Empty path = snapshot root.
+ */
+api.get(
+  '/:id/tree',
+  {
+    summary: 'List a directory inside a snapshot',
+    description:
+      'Returns the entries of one directory level inside the snapshot. Used by the UI to lazy-expand a backup tree. Pass `path` as a relative path inside the snapshot; omit it to list the snapshot root.',
+    params: backupIdParamSchema,
+    query: snapshotPathQuerySchema,
+    responses: {
+      200: { description: 'Directory entries' },
+      404: { description: 'Backup or sub-path not found' },
+      500: { description: 'Failed to list snapshot entries' },
+    },
+  },
+  async (req: Request, res: Response) => {
+    const backupId = req.params.id as string;
+    const subPath = ((req.query.path as string | undefined) ?? '').trim();
+
+    try {
+      const backup = await backupService.getBackup(backupId);
+      if (!backup) {
+        const response: ApiResponse<null> = {
+          success: false,
+          error: { code: 'BACKUP_NOT_FOUND', message: `Backup '${backupId}' not found` },
+          timestamp: new Date().toISOString(),
+        };
+        res.status(404).json(response);
+        return;
+      }
+
+      const entries = await kopiaClient.listSnapshotEntries(backupId, subPath);
+      const response: ApiResponse<{ path: string; entries: KopiaLsEntry[] }> = {
+        success: true,
+        data: { path: subPath, entries },
+        timestamp: new Date().toISOString(),
+      };
+      res.json(response);
+    } catch (error) {
+      if (error instanceof KopiaEntryNotFoundError) {
+        const response: ApiResponse<null> = {
+          success: false,
+          error: { code: 'ENTRY_NOT_FOUND', message: error.message },
+          timestamp: new Date().toISOString(),
+        };
+        res.status(404).json(response);
+        return;
+      }
+      logger.error({ error, backupId, subPath }, 'Failed to list snapshot entries');
+      const response: ApiResponse<null> = {
+        success: false,
+        error: { code: 'TREE_ERROR', message: (error as Error).message },
+        timestamp: new Date().toISOString(),
+      };
+      res.status(500).json(response);
+    }
+  }
+);
+
+// Avoids the full-snapshot cost of /download when the user only wants
+// one sub-path (e.g. this week's QuestDB parquet shards).
+api.get(
+  '/:id/download-subtree',
+  {
+    summary: 'Download a file or directory from a snapshot',
+    description:
+      'For a file path, streams the raw bytes (application/octet-stream). For a directory path, restores the subtree to a temp dir, streams it as a ZIP, and cleans up. Use this to grab a single sub-path without pulling the whole snapshot.',
+    params: backupIdParamSchema,
+    query: snapshotPathQuerySchema,
+    responses: {
+      200: {
+        description: 'File bytes or ZIP of subtree',
+        content: { 'application/octet-stream': {}, 'application/zip': {} },
+      },
+      400: { description: 'sourcePath empty or invalid' },
+      404: { description: 'Backup or sub-path not found' },
+      500: { description: 'Failed to produce subtree download' },
+    },
+  },
+  async (req: Request, res: Response) => {
+    const backupId = req.params.id as string;
+    const subPath = ((req.query.path as string | undefined) ?? '').trim();
+
+    if (!subPath) {
+      const response: ApiResponse<null> = {
+        success: false,
+        error: {
+          code: 'INVALID_PATH',
+          message: 'path query parameter is required for download-subtree',
+        },
+        timestamp: new Date().toISOString(),
+      };
+      res.status(400).json(response);
+      return;
+    }
+
+    try {
+      const backup = await backupService.getBackup(backupId);
+      if (!backup) {
+        const response: ApiResponse<null> = {
+          success: false,
+          error: { code: 'BACKUP_NOT_FOUND', message: `Backup '${backupId}' not found` },
+          timestamp: new Date().toISOString(),
+        };
+        res.status(404).json(response);
+        return;
+      }
+
+      // Locate the entry in the parent directory listing — kopia show
+      // only accepts an objectId; for files we use that to stream
+      // directly. For directories we restore to a tempdir and ZIP.
+      const parentPath = subPath.includes('/') ? subPath.replace(/\/[^/]*$/, '') : '';
+      const lastSegment = subPath.replace(/^.*\//, '');
+      const parentEntries = await kopiaClient.listSnapshotEntries(backupId, parentPath);
+      const entry = parentEntries.find((e) => e.name === lastSegment);
+      if (!entry) {
+        const response: ApiResponse<null> = {
+          success: false,
+          error: {
+            code: 'ENTRY_NOT_FOUND',
+            message: `'${subPath}' not found in backup`,
+          },
+          timestamp: new Date().toISOString(),
+        };
+        res.status(404).json(response);
+        return;
+      }
+
+      if (!entry.isDir) {
+        // Single file: stream kopia show <objectId> raw.
+        const safeName = lastSegment.replace(/[^A-Za-z0-9._-]/g, '_');
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+        const stream = kopiaClient.showFileByObjectId(entry.objectId);
+        stream.on('error', (err: Error) => {
+          logger.error({ err, backupId, subPath }, 'kopia show stream error');
+          if (!res.headersSent) {
+            res.status(500).end();
+          } else {
+            res.end();
+          }
+        });
+        stream.pipe(res);
+        return;
+      }
+
+      // Directory: restore to a temp dir, zip, stream, clean up.
+      const tempDir = join(config.dataDir, '.tmp', 'subtree', `${backupId}-${Date.now()}`);
+      await mkdir(tempDir, { recursive: true });
+      try {
+        await kopiaClient.restoreSubtree(backupId, subPath, tempDir);
+
+        const zipPath = `${tempDir}.zip`;
+        const output = createWriteStream(zipPath);
+        const archive = new ZipArchive({ zlib: { level: 9 } });
+        try {
+          await new Promise<void>((resolve, reject) => {
+            output.on('close', resolve);
+            // Without 'error' on output, a disk-full or EACCES during
+            // write resolves never; reject so the catch below cleans up.
+            output.on('error', reject);
+            archive.on('error', reject);
+            archive.pipe(output);
+            archive.directory(tempDir, false);
+            void archive.finalize();
+          });
+        } catch (zipBuildError) {
+          await rm(zipPath, { force: true }).catch(() => {});
+          throw zipBuildError;
+        }
+
+        const safeName = lastSegment.replace(/[^A-Za-z0-9._-]/g, '_') || 'subtree';
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', `attachment; filename="${safeName}.zip"`);
+        const stream = createReadStream(zipPath);
+        // Cleanup must run on every terminal outcome: normal end, stream
+        // error, or client abort (res 'close'). Without all three, an
+        // aborted download leaves <tempDir>.zip behind forever.
+        let zipCleaned = false;
+        const cleanupZip = (): void => {
+          if (zipCleaned) return;
+          zipCleaned = true;
+          try {
+            unlinkSync(zipPath);
+          } catch {
+            // best-effort cleanup
+          }
+        };
+        stream.on('end', cleanupZip);
+        stream.on('error', (err: Error) => {
+          logger.error({ err, backupId, subPath }, 'subtree zip stream error');
+          stream.destroy();
+          cleanupZip();
+          if (!res.headersSent) {
+            res.status(500).end();
+          } else {
+            res.end();
+          }
+        });
+        res.on('close', () => {
+          // Client disconnect — abort the read stream so 'end' doesn't
+          // fire on a half-read file; cleanup handles deletion.
+          if (!zipCleaned) {
+            stream.destroy();
+            cleanupZip();
+          }
+        });
+        stream.pipe(res);
+      } finally {
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    } catch (error) {
+      if (error instanceof KopiaEntryNotFoundError) {
+        const response: ApiResponse<null> = {
+          success: false,
+          error: { code: 'ENTRY_NOT_FOUND', message: error.message },
+          timestamp: new Date().toISOString(),
+        };
+        res.status(404).json(response);
+        return;
+      }
+      logger.error({ error, backupId, subPath }, 'Failed to download subtree');
+      if (!res.headersSent) {
+        const response: ApiResponse<null> = {
+          success: false,
+          error: { code: 'DOWNLOAD_SUBTREE_ERROR', message: (error as Error).message },
+          timestamp: new Date().toISOString(),
+        };
+        res.status(500).json(response);
+      } else {
+        res.end();
+      }
+    }
+  }
+);
+
+api.post(
+  '/:id/restore-partial',
+  {
+    summary: 'Restore a single file or directory from a snapshot',
+    description:
+      'Restores a sub-path from a snapshot to its original location or to a custom path under signalkDataPath. If the destination already exists and confirmOverwrite is not set, returns 409 with the existing entry mtime/size so the UI can show a confirmation diff.',
+    params: backupIdParamSchema,
+    body: partialRestoreSchema,
+    responses: {
+      202: { description: 'Partial restore started' },
+      400: { description: 'Invalid request' },
+      404: { description: 'Backup or source not found' },
+      409: {
+        description: 'Target exists (confirmation required) OR another restore is in progress',
+      },
+      500: { description: 'Failed to start partial restore' },
+    },
+  },
+  async (req: Request, res: Response) => {
+    const backupId = req.params.id as string;
+    const body = req.body as PartialRestoreInput;
+
+    try {
+      const backup = await backupService.getBackup(backupId);
+      if (!backup) {
+        const response: ApiResponse<null> = {
+          success: false,
+          error: { code: 'BACKUP_NOT_FOUND', message: `Backup '${backupId}' not found` },
+          timestamp: new Date().toISOString(),
+        };
+        res.status(404).json(response);
+        return;
+      }
+
+      // Shared lock — covers a full restore in progress as well.
+      if (isAnyRestoreActive()) {
+        const response: ApiResponse<null> = {
+          success: false,
+          error: {
+            code: 'RESTORE_IN_PROGRESS',
+            message: 'A restore operation is already in progress',
+          },
+          timestamp: new Date().toISOString(),
+        };
+        res.status(409).json(response);
+        return;
+      }
+
+      // Pre-flight conflict probe — if the target exists and the caller
+      // didn't confirm, surface the existing entry so the UI can show
+      // a confirmation diff before resubmitting with confirmOverwrite.
+      if (!body.confirmOverwrite) {
+        const existing = await restorePartialService.describeExistingTarget(body);
+        if (existing.exists) {
+          const response: ApiResponse<{
+            conflict: { targetPath: string; mtime: string | null; size: number | null };
+          }> = {
+            success: false,
+            error: {
+              code: 'TARGET_EXISTS',
+              message: `Target '${existing.targetPath}' already exists; resubmit with confirmOverwrite=true to proceed`,
+            },
+            data: {
+              conflict: {
+                targetPath: existing.targetPath,
+                mtime: existing.mtime,
+                size: existing.size,
+              },
+            },
+            timestamp: new Date().toISOString(),
+          };
+          res.status(409).json(response);
+          return;
+        }
+      }
+
+      // Kick the restore off asynchronously and return 202 — the UI
+      // polls /restore-partial/status or subscribes to /restore-partial/stream.
+      restorePartialService.restorePartial(backupId, body).catch((err) => {
+        logger.error({ err, backupId, sourcePath: body.sourcePath }, 'Partial restore failed');
+      });
+
+      const response: ApiResponse<{ started: boolean }> = {
+        success: true,
+        data: { started: true },
+        timestamp: new Date().toISOString(),
+      };
+      res.status(202).json(response);
+    } catch (error) {
+      if (error instanceof PartialRestoreError) {
+        const status = partialErrorStatus(error.code);
+        const response: ApiResponse<null> = {
+          success: false,
+          error: { code: error.code, message: error.message },
+          timestamp: new Date().toISOString(),
+        };
+        res.status(status).json(response);
+        return;
+      }
+      logger.error({ error, backupId }, 'Failed to start partial restore');
+      const response: ApiResponse<null> = {
+        success: false,
+        error: { code: 'PARTIAL_RESTORE_ERROR', message: (error as Error).message },
+        timestamp: new Date().toISOString(),
+      };
+      res.status(500).json(response);
+    }
+  }
+);
+
+export function partialErrorStatus(code: PartialRestoreError['code']): number {
+  switch (code) {
+    case 'INVALID_SOURCE':
+    case 'INVALID_TARGET':
+      return 400;
+    case 'NOT_FOUND':
+      return 404;
+    case 'CONFLICT':
+    case 'BUSY':
+    case 'RESTORE_NEEDS_FULL':
+      return 409;
+    case 'INTERNAL':
+    default:
+      return 500;
+  }
+}
 
 /**
  * GET /api/backups/repository
