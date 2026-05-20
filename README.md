@@ -10,7 +10,7 @@ You normally don't run this container directly — install the [signalk-backup](
 - **Schedule** hourly / daily / weekly / startup tiers with independent retention
 - **Sync** to a local destination (USB drive, NAS, any mounted volume) or to Google Drive via [rclone](https://rclone.org/) with `drive.file` scope (the app only sees files it created)
 - **Restore** with safety-backup rollback — every full restore creates a snapshot of current state first; partial restores stash the existing target before overwriting
-- **Selective restore** — browse any snapshot's file tree (`GET /api/backups/:id/tree`), download a single file or whole subdirectory (`/download-subtree`), or restore one sub-path in-place under signalkDataPath (`/restore-partial`). The plugin's host-side writer handles restores to arbitrary host paths outside the container's view
+- **Selective restore** — browse any snapshot's file tree, download a single file or whole subdirectory, or restore one sub-path in-place under signalkDataPath. The plugin's host-side writer handles restores to arbitrary host paths outside the container's view. See the API table below for the routes.
 - **Expose** an Express HTTP API (default port 3010). Headless — the user-facing UI is the [signalk-backup](https://github.com/dirkwa/signalk-backup) plugin's webapp, mounted into SignalK at `/signalk-backup/`
 
 ## Image
