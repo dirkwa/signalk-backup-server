@@ -10,7 +10,7 @@
 import { createActor, type ActorRefFrom } from 'xstate';
 import { existsSync } from 'fs';
 import { rename, rm, stat, realpath } from 'fs/promises';
-import { dirname, isAbsolute, join, relative, resolve } from 'path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
 
 import { restorePartialMachine } from './restore-partial-machine.js';
 import { kopiaClient, KopiaEntryNotFoundError } from './kopia-client.js';
@@ -112,7 +112,13 @@ export async function resolvePartialTarget(
     if (customPath.includes('\0')) {
       throw new PartialRestoreError('customPath must not contain NUL bytes', 'INVALID_TARGET');
     }
-    rawTarget = isAbsolute(customPath) ? customPath : join(root, customPath);
+    // Trailing slash = "this is a directory" intent. Append the source's
+    // basename so a file restore to "tmp/" produces "tmp/<filename>"
+    // instead of overwriting "tmp" as a file.
+    const explicitDir = /[/\\]$/.test(customPath);
+    const baseCustom = explicitDir ? customPath.replace(/[/\\]+$/, '') : customPath;
+    const joined = isAbsolute(baseCustom) ? baseCustom : join(root, baseCustom);
+    rawTarget = explicitDir ? join(joined, basename(sourcePath)) : joined;
   }
 
   const resolved = resolve(rawTarget);
