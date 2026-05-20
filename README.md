@@ -47,7 +47,7 @@ All routes mounted under `/api/`. Full OpenAPI spec at `/api/openapi.json` and S
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Backups             | `GET /api/backups`, `POST /api/backups`, `GET /api/backups/:id`, `DELETE /api/backups/:id`, `POST /api/backups/:id/restore`, `POST /api/backups/upload`, `GET /api/backups/:id/download` |
 | Selective restore   | `GET /api/backups/:id/tree`, `GET /api/backups/:id/download-subtree`, `POST /api/backups/:id/restore-partial`                                                                            |
-| Partial-restore SSE | `GET /api/backups/restore-partial/status`, `GET .../stream`, `POST .../reset`                                                                                                           |
+| Partial-restore SSE | `GET /api/backups/restore-partial/status`, `GET /api/backups/restore-partial/stream`, `POST /api/backups/restore-partial/reset`                                                         |
 | Scheduler           | `GET /api/backups/scheduler`, `POST /api/backups/scheduler/start`, `POST /api/backups/scheduler/stop`                                                                                   |
 | Cloud sync          | `GET /api/cloud/status`, `POST /api/cloud/sync`, `GET /api/cloud/installs`, `POST /api/cloud/restore/prepare`, `POST /api/cloud/restore/start`, `POST /api/cloud/restore/reset`          |
 | GDrive              | `POST /api/cloud/gdrive/connect`, `POST /api/cloud/gdrive/disconnect`, `POST /api/cloud/gdrive/auth-state`, `POST /api/cloud/gdrive/auth-callback`, `POST /api/cloud/gdrive/cancel`      |
