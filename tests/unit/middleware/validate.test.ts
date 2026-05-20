@@ -1,8 +1,6 @@
-// Regression coverage for the TypeBox validation middleware. The
-// motivating bug: Express 5 made req.query a getter-only property, so
-// a plain `req.query = ...` after TypeBox defaulting throws "Cannot
-// set property query of #<IncomingMessage>". Routes that declared a
-// query schema therefore 400'd on every request.
+// Regression coverage for the Express 5 getter-only req.query: plain
+// assignment after TypeBox defaulting threw "Cannot set property query"
+// and every route with a query schema 400'd.
 
 import { describe, expect, it, vi } from 'vitest';
 import { Type } from '@sinclair/typebox';
