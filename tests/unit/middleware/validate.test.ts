@@ -68,22 +68,26 @@ describe('validate middleware', () => {
       path: Type.Optional(Type.String()),
     });
 
-    it('passes through valid query without throwing on the read-only getter', () => {
-      const { result } = runMiddleware({
+    it('passes through valid query and leaves req.query readable', () => {
+      const { result, req } = runMiddleware({
         query: { path: 'plugin-config-data/foo' },
         queryGetterOnly: true,
         schemas: { query: querySchema },
       });
       expect(result).toBe('next');
+      // Confirms the defineProperty replacement actually exposes the
+      // validated value, not just that the assignment didn't throw.
+      expect((req.query as { path?: string }).path).toBe('plugin-config-data/foo');
     });
 
     it('passes through an empty query when path is optional', () => {
-      const { result } = runMiddleware({
+      const { result, req } = runMiddleware({
         query: {},
         queryGetterOnly: true,
         schemas: { query: querySchema },
       });
       expect(result).toBe('next');
+      expect(req.query).toEqual({});
     });
 
     it('still returns 400 on invalid query (no silent pass-through)', () => {
