@@ -1,7 +1,11 @@
+import { statfs } from 'fs/promises';
 import { logger } from './logger.js';
 import { backupService } from './backup-service.js';
-import { cloudSyncService } from './cloud-sync-service.js';
+import { cloudSyncService, type CloudBackupCompleteOutcome } from './cloud-sync-service.js';
+import { backupEvents } from './backup-events.js';
+import { config } from '../config/index.js';
 import type { SchedulerStatus, BackupResult } from '../types/backup.js';
+import type { BackupCompletedEventType } from '../schemas/events.js';
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -127,6 +131,7 @@ class BackupScheduler {
   }
 
   async triggerHourly(): Promise<BackupResult> {
+    const startedAt = new Date();
     logger.info('Running hourly backup');
 
     const result = await backupService.createBackup({
@@ -134,18 +139,12 @@ class BackupScheduler {
       description: 'Automatic hourly backup',
     });
 
-    if (result.success) {
-      this.lastBackupTime = Date.now();
-      logger.info({ backupId: result.backup?.id }, 'Hourly backup completed');
-      cloudSyncService.onBackupComplete().catch(() => {});
-    } else {
-      logger.error({ error: result.error }, 'Hourly backup failed');
-    }
-
+    await this.recordRunOutcome('hourly', startedAt, result);
     return result;
   }
 
   async triggerDaily(): Promise<BackupResult> {
+    const startedAt = new Date();
     logger.info('Running daily backup');
 
     const result = await backupService.createBackup({
@@ -153,18 +152,12 @@ class BackupScheduler {
       description: 'Automatic daily backup',
     });
 
-    if (result.success) {
-      this.lastBackupTime = Date.now();
-      logger.info({ backupId: result.backup?.id }, 'Daily backup completed');
-      cloudSyncService.onBackupComplete().catch(() => {});
-    } else {
-      logger.error({ error: result.error }, 'Daily backup failed');
-    }
-
+    await this.recordRunOutcome('daily', startedAt, result);
     return result;
   }
 
   async triggerWeekly(): Promise<BackupResult> {
+    const startedAt = new Date();
     logger.info('Running weekly backup');
 
     const result = await backupService.createBackup({
@@ -172,14 +165,7 @@ class BackupScheduler {
       description: 'Automatic weekly backup',
     });
 
-    if (result.success) {
-      this.lastBackupTime = Date.now();
-      logger.info({ backupId: result.backup?.id }, 'Weekly backup completed');
-      cloudSyncService.onBackupComplete().catch(() => {});
-    } else {
-      logger.error({ error: result.error }, 'Weekly backup failed');
-    }
-
+    await this.recordRunOutcome('weekly', startedAt, result);
     return result;
   }
 
@@ -199,6 +185,7 @@ class BackupScheduler {
       return null;
     }
 
+    const startedAt = new Date();
     logger.info(
       { hoursSinceLastBackup: hoursSinceLastBackup.toFixed(1) },
       'Running startup backup'
@@ -209,15 +196,78 @@ class BackupScheduler {
       description: `Automatic startup backup (${hoursSinceLastBackup.toFixed(0)}h since last backup)`,
     });
 
+    await this.recordRunOutcome('startup', startedAt, result);
+    return result;
+  }
+
+  // WHY: single funnel so all four trigger paths produce the same SSE payload (issue #33).
+  private async recordRunOutcome(
+    tier: BackupCompletedEventType['tier'],
+    startedAt: Date,
+    result: BackupResult
+  ): Promise<void> {
+    let cloudOutcome: CloudBackupCompleteOutcome = { result: 'skipped' };
+
     if (result.success) {
       this.lastBackupTime = Date.now();
-      logger.info({ backupId: result.backup?.id }, 'Startup backup completed');
-      cloudSyncService.onBackupComplete().catch(() => {});
+      logger.info({ backupId: result.backup?.id }, `${tier} backup completed`);
+      try {
+        cloudOutcome = await cloudSyncService.onBackupComplete();
+      } catch (error) {
+        // onBackupComplete already swallows sync failures; an exception here
+        // means something deeper went wrong (e.g. settings read). Record it
+        // as a cloud failure rather than dropping the whole event.
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn({ error }, 'onBackupComplete threw unexpectedly');
+        cloudOutcome = { result: 'failure', error: message };
+      }
     } else {
-      logger.error({ error: result.error }, 'Startup backup failed');
+      logger.error({ error: result.error }, `${tier} backup failed`);
     }
 
-    return result;
+    const fsStats = await this.probeFreeSpace();
+
+    const event: BackupCompletedEventType = {
+      type: 'backup-completed',
+      tier,
+      timestamp: startedAt.toISOString(),
+      localResult: result.success ? 'success' : 'failure',
+      // WHY omit localBytes when size is unknown: 0 looks like "0-byte backup", which is wrong.
+      ...(result.success
+        ? {
+            ...(typeof result.backup?.size === 'number' ? { localBytes: result.backup.size } : {}),
+            ...(result.backup?.id ? { backupId: result.backup.id } : {}),
+          }
+        : {
+            localError: result.error,
+          }),
+      ...(cloudOutcome.result !== 'skipped' || cloudOutcome.target
+        ? {
+            cloudResult: cloudOutcome.result,
+            ...(cloudOutcome.target ? { cloudTarget: cloudOutcome.target } : {}),
+            ...(cloudOutcome.error ? { cloudError: cloudOutcome.error } : {}),
+          }
+        : {}),
+      freeBytes: fsStats.freeBytes,
+      totalBytes: fsStats.totalBytes,
+      nextScheduled: nextScheduledTimestamps(),
+    };
+
+    backupEvents.emit('backup-completed', event);
+  }
+
+  // WHY zeros on failure: plugin treats totalBytes===0 as "unknown" and skips storageLow.
+  private async probeFreeSpace(): Promise<{ freeBytes: number; totalBytes: number }> {
+    try {
+      const s = await statfs(config.kopiaRepoPath);
+      return {
+        freeBytes: s.bsize * s.bavail,
+        totalBytes: s.bsize * s.blocks,
+      };
+    } catch (error) {
+      logger.debug({ error }, 'statfs on kopia repo path failed');
+      return { freeBytes: 0, totalBytes: 0 };
+    }
   }
 
   async getStatus(): Promise<SchedulerStatus> {
@@ -248,27 +298,15 @@ class BackupScheduler {
       logger.debug('Could not fetch backup counts (service may not be initialized yet)');
     }
 
-    const now = new Date();
-
-    const nextHourly = new Date(now);
-    nextHourly.setMinutes(0, 0, 0);
-    nextHourly.setHours(nextHourly.getHours() + 1);
-
-    const nextDaily = new Date(now);
-    nextDaily.setHours(24, 0, 0, 0);
-
-    const nextWeekly = new Date(now);
-    const daysUntilSunday = (7 - now.getDay()) % 7 || 7;
-    nextWeekly.setDate(nextWeekly.getDate() + daysUntilSunday);
-    nextWeekly.setHours(0, 0, 0, 0);
+    const next = nextScheduledTimestamps();
 
     return {
       enabled: this.enabled,
       lastBackup,
       nextBackups: {
-        hourly: this.enabled ? nextHourly.toISOString() : null,
-        daily: this.enabled ? nextDaily.toISOString() : null,
-        weekly: this.enabled ? nextWeekly.toISOString() : null,
+        hourly: this.enabled ? next.hourly : null,
+        daily: this.enabled ? next.daily : null,
+        weekly: this.enabled ? next.weekly : null,
       },
       backupCounts: counts,
     };
@@ -277,6 +315,31 @@ class BackupScheduler {
   isEnabled(): boolean {
     return this.enabled;
   }
+}
+
+// WHY exported: recordRunOutcome reuses this for the SSE payload; no `this` needed.
+export function nextScheduledTimestamps(now: Date = new Date()): {
+  hourly: string;
+  daily: string;
+  weekly: string;
+} {
+  const nextHourly = new Date(now);
+  nextHourly.setMinutes(0, 0, 0);
+  nextHourly.setHours(nextHourly.getHours() + 1);
+
+  const nextDaily = new Date(now);
+  nextDaily.setHours(24, 0, 0, 0);
+
+  const nextWeekly = new Date(now);
+  const daysUntilSunday = (7 - now.getDay()) % 7 || 7;
+  nextWeekly.setDate(nextWeekly.getDate() + daysUntilSunday);
+  nextWeekly.setHours(0, 0, 0, 0);
+
+  return {
+    hourly: nextHourly.toISOString(),
+    daily: nextDaily.toISOString(),
+    weekly: nextWeekly.toISOString(),
+  };
 }
 
 export const backupScheduler = new BackupScheduler();
