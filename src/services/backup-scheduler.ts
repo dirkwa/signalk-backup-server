@@ -200,18 +200,7 @@ class BackupScheduler {
     return result;
   }
 
-  /**
-   * Consolidates everything that should happen after a scheduled run resolves:
-   *   - update lastBackupTime on success
-   *   - structured log (info on success, error on failure)
-   *   - chain cloudSyncService.onBackupComplete (only on success — a failed local
-   *     snapshot has nothing new to push)
-   *   - probe filesystem free-space on the Kopia repo path
-   *   - emit a `backup-completed` event so the SSE route + the signalk-backup
-   *     plugin (issue dirkwa/signalk-backup#33) can publish SignalK deltas
-   *
-   * Returns nothing; any error here is non-fatal to the backup itself.
-   */
+  // WHY: single funnel so all four trigger paths produce the same SSE payload (issue #33).
   private async recordRunOutcome(
     tier: BackupCompletedEventType['tier'],
     startedAt: Date,
@@ -243,10 +232,11 @@ class BackupScheduler {
       tier,
       timestamp: startedAt.toISOString(),
       localResult: result.success ? 'success' : 'failure',
+      // WHY omit localBytes when size is unknown: 0 looks like "0-byte backup", which is wrong.
       ...(result.success
         ? {
-            localBytes: result.backup?.size ?? 0,
-            backupId: result.backup?.id,
+            ...(typeof result.backup?.size === 'number' ? { localBytes: result.backup.size } : {}),
+            ...(result.backup?.id ? { backupId: result.backup.id } : {}),
           }
         : {
             localError: result.error,
@@ -266,11 +256,7 @@ class BackupScheduler {
     backupEvents.emit('backup-completed', event);
   }
 
-  /**
-   * Read disk free-space on the Kopia repo filesystem. Failures (path
-   * missing, FS not statvfs-capable) collapse to zeros — the plugin treats
-   * `totalBytes === 0` as "unknown" and skips the storageLow notification.
-   */
+  // WHY zeros on failure: plugin treats totalBytes===0 as "unknown" and skips storageLow.
   private async probeFreeSpace(): Promise<{ freeBytes: number; totalBytes: number }> {
     try {
       const s = await statfs(config.kopiaRepoPath);
@@ -331,12 +317,7 @@ class BackupScheduler {
   }
 }
 
-/**
- * Compute next-scheduled ISO timestamps for all three tiers from `now`.
- * Pure, side-effect-free — same arithmetic as getStatus() used inline before;
- * extracted so recordRunOutcome can reuse it without bringing a `this`
- * reference into the event payload.
- */
+// WHY exported: recordRunOutcome reuses this for the SSE payload; no `this` needed.
 export function nextScheduledTimestamps(now: Date = new Date()): {
   hourly: string;
   daily: string;

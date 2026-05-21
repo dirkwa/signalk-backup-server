@@ -242,11 +242,7 @@ interface CloudInstall {
   info?: Record<string, unknown>;
 }
 
-/**
- * Outcome of cloudSyncService.onBackupComplete().
- * `skipped` covers both "sync mode is not after_backup" and "auth not connected"
- * — neither is a failure, the cloud just isn't in the picture for this run.
- */
+// WHY `skipped`: covers non-after_backup mode + not-authenticated — neither is a failure.
 export interface CloudBackupCompleteOutcome {
   result: 'success' | 'failure' | 'skipped';
   target?: CloudSyncProvider;
@@ -527,14 +523,7 @@ class CloudSyncService {
     return updated;
   }
 
-  /**
-   * Called after a successful local backup to trigger cloud sync
-   * if syncMode is 'after_backup'.
-   *
-   * Returns an outcome descriptor so the scheduler can include it in the
-   * BackupCompletedEvent published over SSE — see backup-events.ts.
-   * Existing fire-and-forget callers ignore the return value.
-   */
+  // WHY return outcome: scheduler embeds it in the SSE event; legacy fire-and-forget callers ignore it.
   async onBackupComplete(): Promise<CloudBackupCompleteOutcome> {
     const settings = await settingsService.get();
     if (settings.cloudSync?.syncMode !== 'after_backup') {

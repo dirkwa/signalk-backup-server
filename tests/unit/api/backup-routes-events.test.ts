@@ -1,10 +1,4 @@
-// Tests for GET /api/backups/events/stream. The route is thin — it
-// subscribes to backupEvents, writes JSON to the SSE channel, and cleans
-// up on close. We exercise it end-to-end against a real http server so we
-// catch header / writer-shape regressions, but the supporting modules are
-// mocked because we don't need a real Kopia binary or settings file just
-// to test event fan-out.
-
+// WHY end-to-end http: catches header/writer-shape regressions a pure unit test would miss.
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import express from 'express';
 import { createServer, type Server } from 'http';
@@ -88,11 +82,22 @@ afterAll(() => {
   });
 });
 
+// WHY clean per-test: prior-test connections may not have unwound their close handler yet.
 beforeEach(() => {
-  // Each test starts from a clean listener state — connections from prior
-  // tests may not have unwound their `req.on('close')` handler synchronously.
   backupEvents.removeAllListeners('backup-completed');
 });
+
+async function waitForListenerCount(target: number, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (backupEvents.listenerCount('backup-completed') !== target) {
+    if (Date.now() > deadline) {
+      throw new Error(
+        `listener count never reached ${target} (still ${backupEvents.listenerCount('backup-completed')})`
+      );
+    }
+    await new Promise((r) => setImmediate(r));
+  }
+}
 
 describe('GET /api/backups/events/stream', () => {
   it('streams a backup-completed event after subscription', async () => {
@@ -155,8 +160,7 @@ describe('GET /api/backups/events/stream', () => {
     expect(backupEvents.listenerCount('backup-completed')).toBe(before + 1);
 
     controller.abort();
-    // Give the close handler a tick to run.
-    await new Promise((r) => setTimeout(r, 100));
+    await waitForListenerCount(before);
     expect(backupEvents.listenerCount('backup-completed')).toBe(before);
   });
 

@@ -1,7 +1,4 @@
-// Tests for backup-scheduler's recordRunOutcome path. Coverage focuses on
-// the new BackupCompletedEvent emission — the legacy setInterval scheduling
-// machinery is left alone (timer-based, hard to test deterministically).
-
+// WHY scope: timer-based scheduling is left alone; only the new SSE emission path is verified.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../../src/services/logger.js', () => ({
@@ -97,6 +94,18 @@ describe('triggerHourly emits backup-completed', () => {
     expect(typeof event.nextScheduled.hourly).toBe('string');
     expect(typeof event.nextScheduled.daily).toBe('string');
     expect(typeof event.nextScheduled.weekly).toBe('string');
+  });
+
+  it('omits localBytes entirely when backup metadata lacks a size', async () => {
+    // WHY: 0 would look like a 0-byte snapshot. Missing field signals "unknown size".
+    mockCreateBackup.mockResolvedValue({ success: true, backup: { id: 'snap-no-size' } });
+
+    const eventP = captureNextEvent();
+    await backupScheduler.triggerHourly();
+    const event = (await eventP) as { localBytes?: number; backupId?: string };
+
+    expect(event.localBytes).toBeUndefined();
+    expect(event.backupId).toBe('snap-no-size');
   });
 
   it('on failure: localResult=failure, localError set, no backupId', async () => {

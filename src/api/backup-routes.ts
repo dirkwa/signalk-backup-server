@@ -743,15 +743,7 @@ api.get(
   }
 );
 
-/**
- * GET /api/backups/events/stream
- * SSE endpoint that streams a `backup-completed` event each time a scheduled
- * backup run resolves. Used by the signalk-backup plugin (issue #33) to
- * publish SignalK delta metrics + notifications without polling.
- *
- * No buffering of past events — subscribers see only events fired after they
- * connect. Keep-alive comments every 25s keep proxies from idling the socket.
- */
+// WHY SSE not polling: plugin (issue #33) needs failure events too, which /scheduler doesn't expose.
 api.get(
   '/events/stream',
   {
