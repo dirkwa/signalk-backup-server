@@ -242,6 +242,17 @@ interface CloudInstall {
   info?: Record<string, unknown>;
 }
 
+/**
+ * Outcome of cloudSyncService.onBackupComplete().
+ * `skipped` covers both "sync mode is not after_backup" and "auth not connected"
+ * — neither is a failure, the cloud just isn't in the picture for this run.
+ */
+export interface CloudBackupCompleteOutcome {
+  result: 'success' | 'failure' | 'skipped';
+  target?: CloudSyncProvider;
+  error?: string;
+}
+
 class CloudSyncService {
   private syncing = false;
   private activeSyncProcess: ChildProcess | null = null;
@@ -519,11 +530,15 @@ class CloudSyncService {
   /**
    * Called after a successful local backup to trigger cloud sync
    * if syncMode is 'after_backup'.
+   *
+   * Returns an outcome descriptor so the scheduler can include it in the
+   * BackupCompletedEvent published over SSE — see backup-events.ts.
+   * Existing fire-and-forget callers ignore the return value.
    */
-  async onBackupComplete(): Promise<void> {
+  async onBackupComplete(): Promise<CloudBackupCompleteOutcome> {
     const settings = await settingsService.get();
     if (settings.cloudSync?.syncMode !== 'after_backup') {
-      return;
+      return { result: 'skipped' };
     }
 
     const provider = settings.cloudSync.provider;
@@ -531,14 +546,17 @@ class CloudSyncService {
     const authStatus = await bindings.authService.getStatus();
     if (!authStatus.connected) {
       logger.debug({ provider }, 'Skipping post-backup cloud sync: provider not connected');
-      return;
+      return { result: 'skipped', target: provider };
     }
 
     try {
       await this.syncToCloud();
+      return { result: 'success', target: provider };
     } catch (error) {
       // Don't fail the backup if cloud sync fails
       logger.warn({ error, provider }, 'Post-backup cloud sync failed (non-fatal)');
+      const message = error instanceof Error ? error.message : String(error);
+      return { result: 'failure', target: provider, error: message };
     }
   }
 

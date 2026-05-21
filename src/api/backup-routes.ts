@@ -32,8 +32,10 @@ import {
   type KopiaLsEntry,
 } from '../services/kopia-client.js';
 import { isAnyRestoreActive } from '../services/restore-lock.js';
+import { backupEvents } from '../services/backup-events.js';
 import { logger } from '../services/logger.js';
 import { createApiRouter } from './openapi-registry.js';
+import type { BackupCompletedEventType } from '../schemas/events.js';
 import {
   createBackupSchema,
   backupIdParamSchema,
@@ -737,6 +739,55 @@ api.get(
     // Clean up on client disconnect
     res.on('close', () => {
       clearInterval(intervalId);
+    });
+  }
+);
+
+/**
+ * GET /api/backups/events/stream
+ * SSE endpoint that streams a `backup-completed` event each time a scheduled
+ * backup run resolves. Used by the signalk-backup plugin (issue #33) to
+ * publish SignalK delta metrics + notifications without polling.
+ *
+ * No buffering of past events — subscribers see only events fired after they
+ * connect. Keep-alive comments every 25s keep proxies from idling the socket.
+ */
+api.get(
+  '/events/stream',
+  {
+    summary: 'Stream scheduled-backup completion events via SSE',
+    description:
+      'Server-Sent Events endpoint. One `backup-completed` event per scheduled run (hourly/daily/weekly/startup). Connection stays open until the client disconnects. Keep-alive comments every 25s.',
+    responses: {
+      200: {
+        description: 'SSE stream of backup completion events',
+        content: {
+          'text/event-stream': {},
+        },
+      },
+    },
+  },
+  async (req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    // Hint to clients: connection is alive, just no events yet.
+    res.write(`: connected ${new Date().toISOString()}\n\n`);
+
+    const onEvent = (event: BackupCompletedEventType): void => {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+    backupEvents.on('backup-completed', onEvent);
+
+    const keepalive = setInterval(() => {
+      res.write(`: keepalive ${Date.now()}\n\n`);
+    }, 25_000);
+
+    req.on('close', () => {
+      clearInterval(keepalive);
+      backupEvents.off('backup-completed', onEvent);
     });
   }
 );

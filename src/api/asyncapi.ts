@@ -76,6 +76,20 @@ For the REST API documentation, see OpenAPI at \`/api/docs\`.
         },
       },
     },
+    'backups/events/stream': {
+      address: '/api/backups/events/stream',
+      description:
+        'Stream scheduled-backup completion events via SSE. One event per scheduler tick (hourly/daily/weekly/startup) once the local snapshot and any chained cloud-sync attempt resolve.',
+      messages: {
+        backupCompleted: {
+          name: 'BackupCompletedEvent',
+          title: 'Backup Completed Event',
+          summary: 'A scheduled backup run finished (success or failure)',
+          contentType: 'application/json',
+          payload: events.BackupCompletedEvent,
+        },
+      },
+    },
   },
   operations: {
     receiveRestoreProgress: {
@@ -84,10 +98,18 @@ For the REST API documentation, see OpenAPI at \`/api/docs\`.
       summary: 'Receive backup restore progress updates',
       description: 'Connect via GET request to receive backup restore progress.',
     },
+    receiveBackupCompleted: {
+      action: 'receive',
+      channel: { $ref: '#/channels/backups~1events~1stream' },
+      summary: 'Receive scheduled-backup completion events',
+      description:
+        'Connect via GET request to receive one event per scheduled backup run, including local + cloud outcome and filesystem free-space.',
+    },
   },
   components: {
     schemas: {
       RestoreProgressEvent: events.RestoreProgressEvent,
+      BackupCompletedEvent: events.BackupCompletedEvent,
     },
   },
 };
