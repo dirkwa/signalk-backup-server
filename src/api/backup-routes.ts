@@ -767,7 +767,7 @@ api.get(
       },
     },
   },
-  async (req: Request, res: Response) => {
+  async (_req: Request, res: Response) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
@@ -785,7 +785,7 @@ api.get(
       res.write(`: keepalive ${Date.now()}\n\n`);
     }, 25_000);
 
-    req.on('close', () => {
+    res.on('close', () => {
       clearInterval(keepalive);
       backupEvents.off('backup-completed', onEvent);
     });
