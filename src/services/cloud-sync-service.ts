@@ -191,7 +191,10 @@ const execFile = promisify(execFileCb);
 
 const CLOUD_RESTORE_CONFIG_PATH = config.kopiaConfigPath + '-cloud-restore';
 
-const SYNC_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+// Connecting to the cloud repo is a metadata-only operation; it shouldn't
+// take more than a couple of minutes even on a slow LTE link. Capped so a
+// hung rclone subprocess can't wedge a restore forever.
+const CLOUD_CONNECT_TIMEOUT_MS = 5 * 60 * 1000;
 
 const CONNECTIVITY_TIMEOUT_MS = 5000;
 
@@ -697,7 +700,7 @@ class CloudSyncService {
 
       await execFile(config.kopiaBinaryPath, args, {
         env,
-        timeout: SYNC_TIMEOUT_MS,
+        timeout: CLOUD_CONNECT_TIMEOUT_MS,
       });
 
       // Set overrides so kopia-client commands (listBackups, restoreSnapshot) use cloud repo
@@ -784,15 +787,11 @@ class CloudSyncService {
 
       // Use spawn (not execFile) so kopia's --progress output streams freely.
       // execFile's maxBuffer would otherwise trip on multi-hour syncs.
+      // No timeout: initial gdrive uploads over LTE routinely run all night.
+      // The user's Cancel button (and process exit) are the only stop signals.
       return new Promise<void>((resolve, reject) => {
         const child = spawn(config.kopiaBinaryPath, args, { env });
         this.activeSyncProcess = child;
-
-        let cancelled = false;
-        const timer = setTimeout(() => {
-          cancelled = true;
-          child.kill('SIGTERM');
-        }, SYNC_TIMEOUT_MS);
 
         let lastStderrTail = '';
         // kopia writes one progress record per line and overwrites the in-place
@@ -813,16 +812,14 @@ class CloudSyncService {
         }
 
         child.once('error', (err) => {
-          clearTimeout(timer);
           this.activeSyncProcess = null;
           reject(new Error('kopia sync failed to start', { cause: err }));
         });
 
         child.once('close', (code, signal) => {
-          clearTimeout(timer);
           this.activeSyncProcess = null;
           if (signal === 'SIGTERM') {
-            reject(new Error(cancelled ? 'Sync timed out' : 'Sync cancelled by user'));
+            reject(new Error('Sync cancelled by user'));
             return;
           }
           if (code !== 0) {
