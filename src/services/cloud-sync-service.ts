@@ -191,7 +191,10 @@ const execFile = promisify(execFileCb);
 
 const CLOUD_RESTORE_CONFIG_PATH = config.kopiaConfigPath + '-cloud-restore';
 
-const SYNC_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+// Connecting to the cloud repo is a metadata-only operation; it shouldn't
+// take more than a couple of minutes even on a slow LTE link. Capped so a
+// hung rclone subprocess can't wedge a restore forever.
+const CLOUD_CONNECT_TIMEOUT_MS = 5 * 60 * 1000;
 
 const CONNECTIVITY_TIMEOUT_MS = 5000;
 
@@ -309,6 +312,10 @@ export interface CloudBackupCompleteOutcome {
 class CloudSyncService {
   private syncing = false;
   private activeSyncProcess: ChildProcess | null = null;
+  // True only when cancelSync() (i.e. the user-facing cancel route) sent the
+  // SIGTERM. Lets the close-handler distinguish "Sync cancelled by user" from
+  // any other source of SIGTERM (container shutdown, external `kill`, OOM).
+  private syncCancelRequested = false;
   private syncScheduleInterval: NodeJS.Timeout | null = null;
   private internetAvailable: boolean | null = null;
   private syncProgress: SyncProgress | null = null;
@@ -345,6 +352,7 @@ class CloudSyncService {
 
     // Set syncing flag immediately so status polls see it right away
     this.syncing = true;
+    this.syncCancelRequested = false;
 
     const settings = await settingsService.get();
     const provider = settings.cloudSync?.provider ?? 'gdrive';
@@ -622,8 +630,15 @@ class CloudSyncService {
     }
 
     logger.info('Cancelling cloud sync');
-    this.activeSyncProcess.kill('SIGTERM');
-    return true;
+    this.syncCancelRequested = true;
+    const signalled = this.activeSyncProcess.kill('SIGTERM');
+    if (!signalled) {
+      // Process already gone or signal refused — don't leave the flag dangling
+      // or the next genuine external SIGTERM would be mis-labeled.
+      this.syncCancelRequested = false;
+      logger.warn('Failed to send SIGTERM to active cloud sync');
+    }
+    return signalled;
   }
 
   stopSchedule(): void {
@@ -697,7 +712,7 @@ class CloudSyncService {
 
       await execFile(config.kopiaBinaryPath, args, {
         env,
-        timeout: SYNC_TIMEOUT_MS,
+        timeout: CLOUD_CONNECT_TIMEOUT_MS,
       });
 
       // Set overrides so kopia-client commands (listBackups, restoreSnapshot) use cloud repo
@@ -784,15 +799,11 @@ class CloudSyncService {
 
       // Use spawn (not execFile) so kopia's --progress output streams freely.
       // execFile's maxBuffer would otherwise trip on multi-hour syncs.
+      // No timeout: initial gdrive uploads over LTE routinely run all night.
+      // The user's Cancel button (and process exit) are the only stop signals.
       return new Promise<void>((resolve, reject) => {
         const child = spawn(config.kopiaBinaryPath, args, { env });
         this.activeSyncProcess = child;
-
-        let cancelled = false;
-        const timer = setTimeout(() => {
-          cancelled = true;
-          child.kill('SIGTERM');
-        }, SYNC_TIMEOUT_MS);
 
         let lastStderrTail = '';
         // kopia writes one progress record per line and overwrites the in-place
@@ -813,16 +824,21 @@ class CloudSyncService {
         }
 
         child.once('error', (err) => {
-          clearTimeout(timer);
           this.activeSyncProcess = null;
+          this.syncCancelRequested = false;
           reject(new Error('kopia sync failed to start', { cause: err }));
         });
 
         child.once('close', (code, signal) => {
-          clearTimeout(timer);
           this.activeSyncProcess = null;
-          if (signal === 'SIGTERM') {
-            reject(new Error(cancelled ? 'Sync timed out' : 'Sync cancelled by user'));
+          const wasUserCancel = this.syncCancelRequested;
+          this.syncCancelRequested = false;
+          if (signal === 'SIGTERM' && wasUserCancel) {
+            reject(new Error('Sync cancelled by user'));
+            return;
+          }
+          if (signal) {
+            reject(new Error(`kopia sync terminated by signal ${signal}`));
             return;
           }
           if (code !== 0) {
