@@ -12,7 +12,7 @@
  * - scheduled: daily/weekly via setInterval
  */
 
-import { execFile as execFileCb, type ChildProcess } from 'child_process';
+import { execFile as execFileCb, spawn, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import { writeFile, readFile, readdir, stat, mkdir } from 'fs/promises';
 import { connect, type Socket } from 'net';
@@ -199,7 +199,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 const WEEK_MS = 7 * DAY_MS;
 
-interface SyncProgress {
+export interface SyncProgress {
   /** Total size of local kopia repo in bytes */
   totalBytes: number;
   /** Blobs processed so far (from kopia stderr) */
@@ -208,6 +208,63 @@ interface SyncProgress {
   totalBlobs?: number;
   /** Bytes processed so far (from kopia stderr) */
   processedBytes?: number;
+}
+
+const BYTE_UNIT_MULTIPLIER: Record<string, number> = {
+  B: 1,
+  KB: 1_000,
+  MB: 1_000_000,
+  GB: 1_000_000_000,
+  TB: 1_000_000_000_000,
+  KiB: 1_024,
+  MiB: 1_024 ** 2,
+  GiB: 1_024 ** 3,
+  TiB: 1_024 ** 4,
+};
+
+// Accepts base2 (KiB/MiB/…) as well as base10 because kopia switches when
+// KOPIA_BYTES_STRING_BASE_2 is set in the env.
+function parseKopiaBytes(raw: string): number | null {
+  const match = raw.trim().match(/^([\d.]+)\s*([KMGT]?i?B)$/);
+  if (!match?.[1] || !match[2]) return null;
+  const value = Number.parseFloat(match[1]);
+  const multiplier = BYTE_UNIT_MULTIPLIER[match[2]];
+  if (!Number.isFinite(value) || multiplier === undefined) return null;
+  return Math.round(value * multiplier);
+}
+
+export function parseKopiaSyncProgress(line: string, progress: SyncProgress): SyncProgress {
+  // Kopia redraws the same progress line via `\r`; strip so the regexes anchor.
+  const cleaned = line.replace(/\r/g, '').trim();
+
+  const sourceFound = cleaned.match(
+    /Found\s+(\d+)\s+BLOBs?\s+\(([^)]+)\)\s+in\s+the\s+source\s+repository,\s+(\d+)\s+\(([^)]+)\)\s+to\s+copy/i
+  );
+  if (sourceFound?.[3]) {
+    progress.totalBlobs = parseInt(sourceFound[3], 10);
+    progress.processedBlobs = 0;
+    progress.processedBytes = 0;
+    return progress;
+  }
+
+  const copied = cleaned.match(/Copied\s+(\d+)\s+blobs?\s+\(([^)]+)\)/i);
+  if (copied?.[1] && copied[2]) {
+    progress.processedBlobs = parseInt(copied[1], 10);
+    const bytes = parseKopiaBytes(copied[2]);
+    if (bytes !== null) progress.processedBytes = bytes;
+    return progress;
+  }
+
+  const destFound = cleaned.match(
+    /Found\s+(\d+)\s+BLOBs?\s+in\s+the\s+destination\s+repository\s+\(([^)]+)\)/i
+  );
+  if (destFound?.[2]) {
+    const bytes = parseKopiaBytes(destFound[2]);
+    if (bytes !== null) progress.processedBytes = bytes;
+    return progress;
+  }
+
+  return progress;
 }
 
 interface CloudSyncStatus {
@@ -699,6 +756,7 @@ class CloudSyncService {
       `--rclone-args=--config=${config.rcloneConfigPath}`,
       '--rclone-args=--transfers=8',
       '--rclone-args=--checkers=16',
+      '--progress',
       ...target.rcloneFlags(),
     ];
     return this.execKopiaSync(args, passwordOverride);
@@ -708,7 +766,7 @@ class CloudSyncService {
     // Ensure the parent dir exists — kopia's filesystem target writes to it
     // without auto-creating intermediate parents.
     await mkdir(installPath, { recursive: true });
-    const args = ['repository', direction, 'filesystem', '--path', installPath];
+    const args = ['repository', direction, 'filesystem', '--path', installPath, '--progress'];
     return this.execKopiaSync(args, undefined);
   }
 
@@ -724,56 +782,68 @@ class CloudSyncService {
 
       logger.debug({ args }, 'Running kopia sync command');
 
+      // Use spawn (not execFile) so kopia's --progress output streams freely.
+      // execFile's maxBuffer would otherwise trip on multi-hour syncs.
       return new Promise<void>((resolve, reject) => {
-        const child = execFileCb(
-          config.kopiaBinaryPath,
-          args,
-          { env, timeout: SYNC_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 },
-          (error, _stdout, stderr) => {
-            this.activeSyncProcess = null;
-            if (error) {
-              if (error.killed || error.signal === 'SIGTERM') {
-                reject(new Error('Sync cancelled by user'));
-              } else {
-                reject(error);
-              }
-              return;
-            }
-            if (stderr?.trim()) {
-              logger.debug({ stderr: stderr.trim() }, 'Kopia sync stderr');
-            }
-            resolve();
-          }
-        );
+        const child = spawn(config.kopiaBinaryPath, args, { env });
         this.activeSyncProcess = child;
 
-        // Stream stderr for progress parsing
+        let cancelled = false;
+        const timer = setTimeout(() => {
+          cancelled = true;
+          child.kill('SIGTERM');
+        }, SYNC_TIMEOUT_MS);
+
+        let lastStderrTail = '';
+        // kopia writes one progress record per line and overwrites the in-place
+        // tick via `\r`; chunks from the OS can split a record. Buffer the
+        // leftover and only feed the parser whole records.
+        let partial = '';
         if (child.stderr) {
           child.stderr.on('data', (data: Buffer) => {
-            const line = data.toString();
-            this.parseKopiaSyncProgress(line);
+            const chunk = data.toString();
+            lastStderrTail = (lastStderrTail + chunk).slice(-2048);
+            partial += chunk;
+            const records = partial.split(/[\r\n]+/);
+            partial = records.pop() ?? '';
+            for (const record of records) {
+              if (record.length > 0) this.parseKopiaSyncProgress(record);
+            }
           });
         }
+
+        child.once('error', (err) => {
+          clearTimeout(timer);
+          this.activeSyncProcess = null;
+          reject(new Error('kopia sync failed to start', { cause: err }));
+        });
+
+        child.once('close', (code, signal) => {
+          clearTimeout(timer);
+          this.activeSyncProcess = null;
+          if (signal === 'SIGTERM') {
+            reject(new Error(cancelled ? 'Sync timed out' : 'Sync cancelled by user'));
+            return;
+          }
+          if (code !== 0) {
+            const tail = lastStderrTail.trim();
+            reject(
+              new Error(`kopia sync exited with code ${String(code)}${tail ? `: ${tail}` : ''}`)
+            );
+            return;
+          }
+          if (lastStderrTail.trim()) {
+            logger.debug({ stderr: lastStderrTail.trim() }, 'Kopia sync stderr tail');
+          }
+          resolve();
+        });
       });
     })();
   }
 
-  /**
-   * Parse kopia sync stderr output for progress information.
-   * Kopia outputs lines like: "  processed X/Y blobs (Z bytes)"
-   */
   private parseKopiaSyncProgress(line: string): void {
-    // Match patterns like "Processed 5/42 blobs" or "processed 5 of 42 blobs"
-    const blobMatch = line.match(/(\d+)\s*[/of]+\s*(\d+)\s*blobs?/i);
-    if (blobMatch?.[1] && blobMatch[2] && this.syncProgress) {
-      this.syncProgress.processedBlobs = parseInt(blobMatch[1], 10);
-      this.syncProgress.totalBlobs = parseInt(blobMatch[2], 10);
-    }
-
-    // Match byte counts like "(1234567 bytes)"
-    const byteMatch = line.match(/\((\d+)\s*bytes?\)/i);
-    if (byteMatch?.[1] && this.syncProgress) {
-      this.syncProgress.processedBytes = parseInt(byteMatch[1], 10);
+    if (this.syncProgress) {
+      parseKopiaSyncProgress(line, this.syncProgress);
     }
   }
 
