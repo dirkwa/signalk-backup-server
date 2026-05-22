@@ -312,6 +312,10 @@ export interface CloudBackupCompleteOutcome {
 class CloudSyncService {
   private syncing = false;
   private activeSyncProcess: ChildProcess | null = null;
+  // True only when cancelSync() (i.e. the user-facing cancel route) sent the
+  // SIGTERM. Lets the close-handler distinguish "Sync cancelled by user" from
+  // any other source of SIGTERM (container shutdown, external `kill`, OOM).
+  private syncCancelRequested = false;
   private syncScheduleInterval: NodeJS.Timeout | null = null;
   private internetAvailable: boolean | null = null;
   private syncProgress: SyncProgress | null = null;
@@ -348,6 +352,7 @@ class CloudSyncService {
 
     // Set syncing flag immediately so status polls see it right away
     this.syncing = true;
+    this.syncCancelRequested = false;
 
     const settings = await settingsService.get();
     const provider = settings.cloudSync?.provider ?? 'gdrive';
@@ -625,6 +630,7 @@ class CloudSyncService {
     }
 
     logger.info('Cancelling cloud sync');
+    this.syncCancelRequested = true;
     this.activeSyncProcess.kill('SIGTERM');
     return true;
   }
@@ -813,13 +819,20 @@ class CloudSyncService {
 
         child.once('error', (err) => {
           this.activeSyncProcess = null;
+          this.syncCancelRequested = false;
           reject(new Error('kopia sync failed to start', { cause: err }));
         });
 
         child.once('close', (code, signal) => {
           this.activeSyncProcess = null;
-          if (signal === 'SIGTERM') {
+          const wasUserCancel = this.syncCancelRequested;
+          this.syncCancelRequested = false;
+          if (signal === 'SIGTERM' && wasUserCancel) {
             reject(new Error('Sync cancelled by user'));
+            return;
+          }
+          if (signal) {
+            reject(new Error(`kopia sync terminated by signal ${signal}`));
             return;
           }
           if (code !== 0) {
