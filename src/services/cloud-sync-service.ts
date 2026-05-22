@@ -12,7 +12,7 @@
  * - scheduled: daily/weekly via setInterval
  */
 
-import { execFile as execFileCb, type ChildProcess } from 'child_process';
+import { execFile as execFileCb, spawn, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import { writeFile, readFile, readdir, stat, mkdir } from 'fs/promises';
 import { connect, type Socket } from 'net';
@@ -222,12 +222,8 @@ const BYTE_UNIT_MULTIPLIER: Record<string, number> = {
   TiB: 1_024 ** 4,
 };
 
-/**
- * Convert a kopia-style humanized byte size like "9.1 KB" / "1.2 GB" to a
- * byte count. Defaults to base10 (kopia's default); base2 (KiB/MiB...) is
- * also accepted in case `KOPIA_BYTES_STRING_BASE_2` was set upstream.
- * Returns null when no unit matched.
- */
+// Accepts base2 (KiB/MiB/…) as well as base10 because kopia switches when
+// KOPIA_BYTES_STRING_BASE_2 is set in the env.
 function parseKopiaBytes(raw: string): number | null {
   const match = raw.trim().match(/^([\d.]+)\s*([KMGT]?i?B)$/);
   if (!match?.[1] || !match[2]) return null;
@@ -237,32 +233,8 @@ function parseKopiaBytes(raw: string): number | null {
   return Math.round(value * multiplier);
 }
 
-/**
- * Parse a kopia `repository sync-to --progress` stderr line and merge any
- * progress info into `progress`. The function mutates the passed-in object
- * in place and returns it for fluent use.
- *
- * Three line shapes from kopia 0.22's `commandRepositorySyncTo` matter here
- * (kopia/internal/units uses base10 by default):
- *
- *   "  Found N BLOBs in the destination repository (X UNIT)"
- *       — destination-listing phase. We can't claim transfer progress here;
- *         leave totalBlobs/processedBlobs untouched, but surface the bytes
- *         already on the destination as `processedBytes` so the UI shows
- *         *something* moving (the bar runs indeterminate-with-bytes).
- *
- *   "  Found N BLOBs (X UNIT) in the source repository, M (Y UNIT) to copy"
- *       — once both ends have been listed we know how many blobs/bytes
- *         actually need uploading. We set `totalBlobs` to M (blobs-to-copy)
- *         and reset `processedBlobs` to 0 so the upload phase counts from
- *         zero against the right denominator.
- *
- *   "  Copied N blobs (X UNIT), Speed: …, ETA: …"
- *       — upload phase. Drives the determinate bar.
- */
 export function parseKopiaSyncProgress(line: string, progress: SyncProgress): SyncProgress {
-  // Kopia uses `\r` to redraw the same progress line in place; strip it
-  // so the regexes can anchor on the actual text content.
+  // Kopia redraws the same progress line via `\r`; strip so the regexes anchor.
   const cleaned = line.replace(/\r/g, '').trim();
 
   const sourceFound = cleaned.match(
@@ -810,36 +782,54 @@ class CloudSyncService {
 
       logger.debug({ args }, 'Running kopia sync command');
 
+      // Use spawn (not execFile) so kopia's --progress output streams freely.
+      // execFile's maxBuffer would otherwise trip on multi-hour syncs.
       return new Promise<void>((resolve, reject) => {
-        const child = execFileCb(
-          config.kopiaBinaryPath,
-          args,
-          { env, timeout: SYNC_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 },
-          (error, _stdout, stderr) => {
-            this.activeSyncProcess = null;
-            if (error) {
-              if (error.killed || error.signal === 'SIGTERM') {
-                reject(new Error('Sync cancelled by user'));
-              } else {
-                reject(error);
-              }
-              return;
-            }
-            if (stderr?.trim()) {
-              logger.debug({ stderr: stderr.trim() }, 'Kopia sync stderr');
-            }
-            resolve();
-          }
-        );
+        const child = spawn(config.kopiaBinaryPath, args, { env });
         this.activeSyncProcess = child;
 
-        // Stream stderr for progress parsing
+        let cancelled = false;
+        const timer = setTimeout(() => {
+          cancelled = true;
+          child.kill('SIGTERM');
+        }, SYNC_TIMEOUT_MS);
+
+        let lastStderrTail = '';
         if (child.stderr) {
           child.stderr.on('data', (data: Buffer) => {
             const line = data.toString();
+            // Keep only the most recent ~2KB so a failure log carries the tail
+            // (kopia's last words) without buffering the whole sync.
+            lastStderrTail = (lastStderrTail + line).slice(-2048);
             this.parseKopiaSyncProgress(line);
           });
         }
+
+        child.once('error', (err) => {
+          clearTimeout(timer);
+          this.activeSyncProcess = null;
+          reject(err);
+        });
+
+        child.once('close', (code, signal) => {
+          clearTimeout(timer);
+          this.activeSyncProcess = null;
+          if (signal === 'SIGTERM') {
+            reject(new Error(cancelled ? 'Sync timed out' : 'Sync cancelled by user'));
+            return;
+          }
+          if (code !== 0) {
+            const tail = lastStderrTail.trim();
+            reject(
+              new Error(`kopia sync exited with code ${String(code)}${tail ? `: ${tail}` : ''}`)
+            );
+            return;
+          }
+          if (lastStderrTail.trim()) {
+            logger.debug({ stderr: lastStderrTail.trim() }, 'Kopia sync stderr tail');
+          }
+          resolve();
+        });
       });
     })();
   }

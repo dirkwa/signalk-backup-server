@@ -37,6 +37,15 @@ describe('parseKopiaSyncProgress', () => {
       );
       expect(p.processedBytes).toBe(1_200_000_000);
     });
+
+    it('handles base2 units (KOPIA_BYTES_STRING_BASE_2) — "1 MiB"', () => {
+      const p = newProgress();
+      parseKopiaSyncProgress(
+        '  Found 10 BLOBs in the destination repository (1 MiB)',
+        p,
+      );
+      expect(p.processedBytes).toBe(1_048_576);
+    });
   });
 
   describe('source-listing phase', () => {
@@ -69,13 +78,19 @@ describe('parseKopiaSyncProgress', () => {
       expect(p.processedBlobs).toBe(5);
       expect(p.processedBytes).toBe(12_000);
     });
+
+    it('parses base2 byte units in the copy phase — "(2 MiB)"', () => {
+      const p = newProgress();
+      parseKopiaSyncProgress('  Copied 7 blobs (2 MiB), Speed: -, ETA: unknown', p);
+      expect(p.processedBlobs).toBe(7);
+      expect(p.processedBytes).toBe(2_097_152);
+    });
   });
 
   describe('full sequence', () => {
     it('walks the destination-list → source-list → copy phases coherently', () => {
       const p = newProgress();
 
-      // Destination listing — bytes only, no blob counts yet.
       parseKopiaSyncProgress(
         '\r  Found 30 BLOBs in the destination repository (28.5 KB)',
         p,
@@ -83,7 +98,6 @@ describe('parseKopiaSyncProgress', () => {
       expect(p.processedBytes).toBe(28_500);
       expect(p.totalBlobs).toBeUndefined();
 
-      // Source listing — we now know how many blobs to copy.
       parseKopiaSyncProgress(
         '  Found 500 BLOBs (3.0 GB) in the source repository, 40 (760 MB) to copy',
         p,
@@ -92,7 +106,6 @@ describe('parseKopiaSyncProgress', () => {
       expect(p.processedBlobs).toBe(0);
       expect(p.processedBytes).toBe(0);
 
-      // First few blobs copied.
       parseKopiaSyncProgress('  Copied 10 blobs (190 MB), Speed: 8 MB/s, ETA: 1m', p);
       expect(p.totalBlobs).toBe(40);
       expect(p.processedBlobs).toBe(10);
