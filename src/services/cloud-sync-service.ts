@@ -631,8 +631,14 @@ class CloudSyncService {
 
     logger.info('Cancelling cloud sync');
     this.syncCancelRequested = true;
-    this.activeSyncProcess.kill('SIGTERM');
-    return true;
+    const signalled = this.activeSyncProcess.kill('SIGTERM');
+    if (!signalled) {
+      // Process already gone or signal refused — don't leave the flag dangling
+      // or the next genuine external SIGTERM would be mis-labeled.
+      this.syncCancelRequested = false;
+      logger.warn('Failed to send SIGTERM to active cloud sync');
+    }
+    return signalled;
   }
 
   stopSchedule(): void {
