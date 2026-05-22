@@ -795,20 +795,27 @@ class CloudSyncService {
         }, SYNC_TIMEOUT_MS);
 
         let lastStderrTail = '';
+        // kopia writes one progress record per line and overwrites the in-place
+        // tick via `\r`; chunks from the OS can split a record. Buffer the
+        // leftover and only feed the parser whole records.
+        let partial = '';
         if (child.stderr) {
           child.stderr.on('data', (data: Buffer) => {
-            const line = data.toString();
-            // Keep only the most recent ~2KB so a failure log carries the tail
-            // (kopia's last words) without buffering the whole sync.
-            lastStderrTail = (lastStderrTail + line).slice(-2048);
-            this.parseKopiaSyncProgress(line);
+            const chunk = data.toString();
+            lastStderrTail = (lastStderrTail + chunk).slice(-2048);
+            partial += chunk;
+            const records = partial.split(/[\r\n]+/);
+            partial = records.pop() ?? '';
+            for (const record of records) {
+              if (record.length > 0) this.parseKopiaSyncProgress(record);
+            }
           });
         }
 
         child.once('error', (err) => {
           clearTimeout(timer);
           this.activeSyncProcess = null;
-          reject(err);
+          reject(new Error('kopia sync failed to start', { cause: err }));
         });
 
         child.once('close', (code, signal) => {
