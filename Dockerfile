@@ -97,8 +97,11 @@ EXPOSE 3010
 # rclone OAuth callback (only used during Drive setup; quiet otherwise)
 EXPOSE 53682
 
+# Use require('http').get, not fetch(): on some rootless-podman + Wolfi + ARM64 hosts
+# undici crashes with SIGILL (illegal instruction) inside the container, leaving the
+# healthcheck silently failing while the server is actually fine.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD node -e "fetch('http://127.0.0.1:3010/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+    CMD node -e "const r=require('http').get('http://127.0.0.1:3010/api/health',res=>{res.resume();process.exit(res.statusCode===200?0:1)});r.on('error',()=>process.exit(1));r.setTimeout(5000,()=>{r.destroy();process.exit(1)})"
 
 ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["node", "dist/server.js"]
