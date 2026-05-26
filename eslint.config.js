@@ -40,6 +40,15 @@ export default tseslint.config(
       '@typescript-eslint/explicit-function-return-type': 'off',
       '@typescript-eslint/no-explicit-any': 'error',
       'no-console': 'off',
+      // Wolfi's nodejs-24 build crashes with SIGILL when undici (the
+      // native fetch implementation) hits certain SIMD/crypto paths on
+      // ARM64 (Cortex-A76 / Pi 5). Use httpFetch from utils/http-client.ts
+      // instead — it uses Node's classic http/https modules. See 0.6.4
+      // healthcheck fix and 0.6.5 gdrive-auth fix.
+      'no-restricted-globals': [
+        'error',
+        { name: 'fetch', message: 'Use httpFetch from utils/http-client.js instead.' },
+      ],
     },
   },
 

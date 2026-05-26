@@ -27,6 +27,7 @@ import { readFile, writeFile, unlink, chmod } from 'fs/promises';
 import { existsSync } from 'fs';
 
 import { config } from '../config/index.js';
+import { httpFetch } from '../utils/http-client.js';
 import { logger } from './logger.js';
 
 /**
@@ -303,7 +304,7 @@ class GDriveAuthService {
     const localUrl = `http://127.0.0.1:${RCLONE_AUTH_PORT}${parsed.pathname}${parsed.search}`;
 
     logger.info('Forwarding OAuth callback to rclone');
-    const response = await fetch(localUrl);
+    const response = await httpFetch(localUrl);
 
     if (!response.ok) {
       throw new Error(`rclone callback returned ${response.status}`);
@@ -317,9 +318,12 @@ class GDriveAuthService {
    * rclone responds with a 302 redirect to accounts.google.com.
    */
   private async extractGoogleAuthUrl(rcloneUrl: string): Promise<string> {
-    const response = await fetch(rcloneUrl, { redirect: 'manual' });
-    const location = response.headers.get('location');
-    if (!location) {
+    // httpFetch uses node:http under the hood which does not follow redirects,
+    // so the 302's Location header comes back as-is — no need for the
+    // fetch-API equivalent `redirect: 'manual'` option.
+    const response = await httpFetch(rcloneUrl);
+    const location = response.headers.location;
+    if (!location || Array.isArray(location)) {
       throw new Error('rclone did not redirect to Google OAuth');
     }
     logger.info('Extracted Google OAuth URL from rclone redirect');
@@ -390,7 +394,7 @@ class GDriveAuthService {
   }
 
   private async getUserEmail(accessToken: string): Promise<string> {
-    const response = await fetch(GOOGLE_USERINFO_URL, {
+    const response = await httpFetch(GOOGLE_USERINFO_URL, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
 
@@ -398,7 +402,7 @@ class GDriveAuthService {
       throw new Error(`Failed to get user info: ${response.status}`);
     }
 
-    const data = (await response.json()) as { email: string };
+    const data = await response.json<{ email: string }>();
     return data.email;
   }
 }
