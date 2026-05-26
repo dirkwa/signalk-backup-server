@@ -111,13 +111,7 @@ app.get('/api/asyncapi.json', (_req, res) => {
 
 const server = createServer(app);
 
-// Bind IPv4 explicitly. Node's default with no host argument is `::`
-// (IPv6 wildcard), which on rootless-podman + pasta topologies leaves
-// /proc/net/tcp empty and only /proc/net/tcp6 listening. The Dockerfile
-// healthcheck then times out because undici fetch hangs trying ::1 first
-// inside the container namespace. Pasta only bridges IPv4 host-side
-// (127.0.0.1:3010->3010/tcp), so IPv4 is the only family any consumer
-// reaches us on anyway.
+// Bind IPv4 explicitly: default `::` (IPv6) breaks rootless-podman+pasta healthchecks (undici hangs on ::1, pasta only bridges IPv4).
 server.listen(config.port, '0.0.0.0', async () => {
   logger.info(
     {

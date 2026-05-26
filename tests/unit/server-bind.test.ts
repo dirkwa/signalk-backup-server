@@ -1,10 +1,4 @@
-// Regression test for the rootless-podman + pasta unhealthy-loop. Node's
-// default `server.listen(port)` (no host arg) binds to `::` only; on
-// Wolfi + pasta the Dockerfile healthcheck's undici fetch hangs against
-// ::1 inside the container namespace. The fix is an explicit `'0.0.0.0'`
-// host arg in src/server.ts. This test guards that the bind family stays
-// IPv4 — if a future refactor drops the host arg, this fails.
-
+// Regression: rootless-podman+pasta breaks with Node's default `::` binding (undici hangs on ::1); explicit '0.0.0.0' keeps the healthcheck reachable.
 import { describe, it, expect } from 'vitest';
 import { createServer, type AddressInfo } from 'net';
 
