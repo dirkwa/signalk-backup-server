@@ -111,7 +111,8 @@ app.get('/api/asyncapi.json', (_req, res) => {
 
 const server = createServer(app);
 
-server.listen(config.port, async () => {
+// Bind IPv4 explicitly: default `::` (IPv6) breaks rootless-podman+pasta healthchecks (undici hangs on ::1, pasta only bridges IPv4).
+server.listen(config.port, '0.0.0.0', async () => {
   logger.info(
     {
       port: config.port,
