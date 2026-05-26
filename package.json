@@ -1,6 +1,6 @@
 {
   "name": "signalk-backup-server",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Headless backup engine for the signalk-backup plugin: Kopia-based deduplicated snapshots with optional rclone sync to Google Drive",
   "main": "dist/server.js",
   "type": "module",
