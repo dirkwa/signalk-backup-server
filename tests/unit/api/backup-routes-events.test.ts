@@ -1,4 +1,6 @@
 // WHY end-to-end http: catches header/writer-shape regressions a pure unit test would miss.
+// fetch() here is intentional (vs httpFetch in src/): tests run on the CI runner where native
+// fetch works, and they need ReadableStream getReader() for SSE — httpFetch buffers the full body.
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import express from 'express';
 import { createServer, type Server } from 'http';
