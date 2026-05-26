@@ -8,16 +8,22 @@
 # No UI. The user-facing UI lives in the plugin's webapp (mounted by
 # SignalK at /signalk-backup/) and reaches us via the plugin's
 # reverse-proxy at /plugins/signalk-backup/api/.
+#
+# Base: node:24-trixie-slim (Debian 13 + Node 24, official upstream).
+# Same family as signalk-updater-server / signalk-doctor-server. Swapped
+# from Wolfi after the 0.6.4/0.6.5 SIGILL chain — Wolfi's nodejs-24 build
+# triggered undici crashes (illegal instruction) on Cortex-A76 / Pi 5.
+# Trixie ships the official upstream Node binary which the project
+# test-builds against, so the SIGILL root cause goes away at the base
+# layer instead of being papered over with `http.get` in callsites.
+# Trade-off: ~210MB final vs ~110MB on Wolfi — irrelevant on a Pi/NVMe.
 
 ARG VERSION=0.1.0
 
 # =============================================================================
 # Stage 1: Build backend (TypeScript → ESM)
 # =============================================================================
-FROM cgr.dev/chainguard/wolfi-base:latest AS backend-builder
-
-RUN apk add --no-cache nodejs-24 npm \
-    && rm -f /usr/lib/node_modules/npm/npmrc
+FROM node:24-trixie-slim AS backend-builder
 
 WORKDIR /app
 
@@ -32,35 +38,37 @@ RUN npm exec tsc
 # =============================================================================
 # Stage 2: Production image
 # =============================================================================
-FROM cgr.dev/chainguard/wolfi-base:latest
+FROM node:24-trixie-slim
 
-# Node 24 + tini for proper PID-1 signal handling. No dbus (keeper used it
-# for systemd self-upgrade, which we don't do — the plugin handles upgrades
-# via signalk-container's update mechanism).
-RUN apk add --no-cache nodejs-24 npm tini \
-    && rm -f /usr/lib/node_modules/npm/npmrc
+# tini    — PID-1 signal handling.
+# ca-certificates — TLS for HTTPS pulls (kopia, rclone, GHCR).
+# wget / unzip — required by the kopia and rclone install steps below;
+#                purged afterward to keep the image lean.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends tini ca-certificates wget unzip \
+ && rm -rf /var/lib/apt/lists/*
 
 # Install Kopia (content-addressable deduplicated snapshots)
 ARG KOPIA_VERSION=0.22.3
 ARG TARGETARCH
 RUN KOPIA_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "x64") && \
-    apk add --no-cache wget && \
     wget -q "https://github.com/kopia/kopia/releases/download/v${KOPIA_VERSION}/kopia-${KOPIA_VERSION}-linux-${KOPIA_ARCH}.tar.gz" -O /tmp/kopia.tar.gz && \
     mkdir -p /usr/local/bin && \
     tar xzf /tmp/kopia.tar.gz --strip-components=1 -C /usr/local/bin/ && \
     chmod +x /usr/local/bin/kopia && \
-    rm /tmp/kopia.tar.gz && \
-    apk del wget
+    rm /tmp/kopia.tar.gz
 
 # Install rclone (Google Drive sync transport)
 ARG RCLONE_VERSION=1.69.2
-RUN apk add --no-cache wget unzip && \
-    wget -q "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-${TARGETARCH}.zip" \
+RUN wget -q "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-${TARGETARCH}.zip" \
         -O /tmp/rclone.zip && \
     unzip -j /tmp/rclone.zip '*/rclone' -d /usr/local/bin/ && \
     chmod +x /usr/local/bin/rclone && \
-    rm /tmp/rclone.zip && \
-    apk del wget unzip
+    rm /tmp/rclone.zip
+
+# Purge the install-only tools now that kopia + rclone are in /usr/local/bin.
+RUN apt-get purge -y --auto-remove wget unzip \
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -97,13 +105,13 @@ EXPOSE 3010
 # rclone OAuth callback (only used during Drive setup; quiet otherwise)
 EXPOSE 53682
 
-# Use require('http').get, not fetch(): on some rootless-podman + Wolfi + ARM64 hosts
-# undici crashes with SIGILL (illegal instruction) inside the container, leaving the
-# healthcheck silently failing while the server is actually fine.
+# Kept on http.get even though the trixie base no longer SIGILLs in undici —
+# this matches the 0.6.4 fix line, leaves no fetch() calls in the runtime
+# command surface, and survives any future regression.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD node -e "const r=require('http').get('http://127.0.0.1:3010/api/health',res=>{res.resume();process.exit(res.statusCode===200?0:1)});r.on('error',()=>process.exit(1));r.setTimeout(5000,()=>{r.destroy();process.exit(1)})"
 
-ENTRYPOINT ["/sbin/tini", "--"]
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "dist/server.js"]
 
 ARG VERSION
