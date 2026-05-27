@@ -443,13 +443,15 @@ class KopiaClient {
       });
       stdout = typeof result === 'string' ? result : '';
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (
-        /entry not found/i.test(message) ||
-        /is not a directory object/i.test(message) ||
-        /unable to parse ID/i.test(message)
-      ) {
-        throw new KopiaEntryNotFoundError(message, snapshotId, normalized);
+      const stderr = err instanceof Error ? err.message : String(err);
+      const isNotADirectory = /is not a directory object/i.test(stderr);
+      const isMissing = /entry not found/i.test(stderr) || /unable to parse ID/i.test(stderr);
+      if (isMissing || isNotADirectory) {
+        const subject = normalized || 'snapshot root';
+        const cleanMessage = isNotADirectory
+          ? `${subject} is not a directory in this snapshot`
+          : `${subject} does not exist in this snapshot`;
+        throw new KopiaEntryNotFoundError(cleanMessage, snapshotId, normalized);
       }
       throw err;
     }

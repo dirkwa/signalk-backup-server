@@ -334,7 +334,7 @@ describe('KopiaClient', () => {
       expect(lastArgs).toContain('snap/a/b');
     });
 
-    it('throws KopiaEntryNotFoundError when kopia stderr says "entry not found"', async () => {
+    it('throws KopiaEntryNotFoundError with clean message when kopia stderr says "entry not found"', async () => {
       mockedExecFile.mockImplementation((_cmd, _args, _opts, cb) => {
         if (typeof cb === 'function') {
           const err = Object.assign(new Error('exited'), {
@@ -346,12 +346,18 @@ describe('KopiaClient', () => {
         return {} as ReturnType<typeof execFile>;
       });
 
-      await expect(kopiaClient.listSnapshotEntries('snap', 'missing')).rejects.toBeInstanceOf(
-        KopiaEntryNotFoundError,
-      );
+      // Clean message replaces raw Kopia stderr so 404 responses don't leak
+      // internal phrasing to users; the subPath is echoed back so the caller
+      // can see which path was missing.
+      await expect(
+        kopiaClient.listSnapshotEntries('snap', 'missing/path'),
+      ).rejects.toBeInstanceOf(KopiaEntryNotFoundError);
+      await expect(
+        kopiaClient.listSnapshotEntries('snap', 'missing/path'),
+      ).rejects.toThrow('missing/path does not exist in this snapshot');
     });
 
-    it('throws KopiaEntryNotFoundError when subPath points at a file', async () => {
+    it('throws KopiaEntryNotFoundError with a "not a directory" message when subPath points at a file', async () => {
       mockedExecFile.mockImplementation((_cmd, _args, _opts, cb) => {
         if (typeof cb === 'function') {
           const err = Object.assign(new Error('exited'), {
@@ -363,9 +369,12 @@ describe('KopiaClient', () => {
         return {} as ReturnType<typeof execFile>;
       });
 
-      await expect(kopiaClient.listSnapshotEntries('snap', 'file.txt')).rejects.toBeInstanceOf(
-        KopiaEntryNotFoundError,
-      );
+      await expect(
+        kopiaClient.listSnapshotEntries('snap', 'file.txt'),
+      ).rejects.toBeInstanceOf(KopiaEntryNotFoundError);
+      await expect(
+        kopiaClient.listSnapshotEntries('snap', 'file.txt'),
+      ).rejects.toThrow('file.txt is not a directory in this snapshot');
     });
 
     it('rejects subPath with .. segments', async () => {
