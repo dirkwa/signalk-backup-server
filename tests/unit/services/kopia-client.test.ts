@@ -346,9 +346,6 @@ describe('KopiaClient', () => {
         return {} as ReturnType<typeof execFile>;
       });
 
-      // Clean message replaces raw Kopia stderr so 404 responses don't leak
-      // internal phrasing to users; the subPath is echoed back so the caller
-      // can see which path was missing.
       await expect(
         kopiaClient.listSnapshotEntries('snap', 'missing/path'),
       ).rejects.toBeInstanceOf(KopiaEntryNotFoundError);
