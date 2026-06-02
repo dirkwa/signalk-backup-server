@@ -49,6 +49,7 @@ vi.mock('../../../src/services/restore-partial-service.js', async () => {
 
 const { rekeyMessageAndCloudResync } = await import('../../../src/api/backup-routes.js');
 const { cloudSyncService } = await import('../../../src/services/cloud-sync-service.js');
+import type { CloudSyncStatus } from '../../../src/services/cloud-sync-service.js';
 
 const mockedGetStatus = vi.mocked(cloudSyncService.getStatus);
 const mockedSyncToCloud = vi.mocked(cloudSyncService.syncToCloud);
@@ -62,14 +63,14 @@ describe('rekeyMessageAndCloudResync', () => {
   });
 
   it('returns the bare message and triggers no sync when cloud is not connected', async () => {
-    mockedGetStatus.mockResolvedValue({ connected: false } as never);
+    mockedGetStatus.mockResolvedValue({ connected: false } as Partial<CloudSyncStatus>);
     const msg = await rekeyMessageAndCloudResync(BASE);
     expect(msg).toBe(BASE);
     expect(mockedSyncToCloud).not.toHaveBeenCalled();
   });
 
   it('appends the stale-cloud warning and starts a sync when cloud is connected', async () => {
-    mockedGetStatus.mockResolvedValue({ connected: true } as never);
+    mockedGetStatus.mockResolvedValue({ connected: true } as Partial<CloudSyncStatus>);
     const msg = await rekeyMessageAndCloudResync(BASE);
     expect(msg).toContain(BASE);
     expect(msg).toMatch(/previous password/i);
@@ -78,7 +79,7 @@ describe('rekeyMessageAndCloudResync', () => {
   });
 
   it('does not fail the password change if the background sync rejects', async () => {
-    mockedGetStatus.mockResolvedValue({ connected: true } as never);
+    mockedGetStatus.mockResolvedValue({ connected: true } as Partial<CloudSyncStatus>);
     mockedSyncToCloud.mockRejectedValue(new Error('sync blew up'));
     await expect(rekeyMessageAndCloudResync(BASE)).resolves.toMatch(/previous password/i);
   });
