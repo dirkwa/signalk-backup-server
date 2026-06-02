@@ -116,8 +116,13 @@ describe('classifyConnectFailure', () => {
 });
 
 describe('resetInitialization', () => {
+  const setInitialized = (value: boolean) => {
+    (backupService as unknown as { initialized: boolean }).initialized = value;
+  };
+
   beforeEach(() => {
     vi.clearAllMocks();
+    setInitialized(true);
   });
 
   it('disconnects the repository so the next init reconnects with the new password', async () => {
