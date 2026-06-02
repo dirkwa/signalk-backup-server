@@ -376,13 +376,13 @@ export class SettingsService {
     return !!settings.backupPassword;
   }
 
-  // Password used to OPEN the repository; does not re-key an existing one.
+  // Records the password in settings; the route re-keys the repo (rekeyRepository) before calling this.
   async setBackupPassword(password: string): Promise<void> {
     await this.update({ backupPassword: password });
     logger.info('Custom backup password set');
   }
 
-  // Resets which password opens the repository; does not re-key an existing one.
+  // Clears the custom password from settings; the route re-keys the repo to the default before calling this.
   async resetBackupPassword(): Promise<void> {
     const settings = await this.get();
     delete settings.backupPassword;

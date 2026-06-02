@@ -1,6 +1,6 @@
 import { createReadStream, createWriteStream, existsSync, readdirSync } from 'fs';
-import { mkdir, rm, readdir, stat, writeFile } from 'fs/promises';
-import { join } from 'path';
+import { mkdir, rm, readdir, stat, writeFile, copyFile } from 'fs/promises';
+import { join, dirname, basename } from 'path';
 import { ZipArchive } from 'archiver';
 import { Extract } from 'unzip-stream';
 
@@ -205,20 +205,6 @@ class BackupService {
     }
   }
 
-  // After a password change the in-memory password and the live kopia
-  // connection are both stale. Disconnect and clear the cache so the next
-  // operation re-reads the password and reconnects with it (or surfaces a
-  // data-safe mismatch error) instead of silently using the old one until
-  // a process restart.
-  async resetInitialization(): Promise<void> {
-    this.initialized = false;
-    try {
-      await kopiaClient.disconnectRepository();
-    } catch (error) {
-      logger.warn({ error }, 'Kopia disconnect during reset failed (continuing)');
-    }
-  }
-
   // Storage exists, so connect — never create-over (kopia refuses, and a create would orphan snapshots).
   // A lost kopia-config is recoverable via connect; a password mismatch is not, so we classify the failure.
   private async connectExistingRepository(): Promise<void> {
@@ -240,6 +226,119 @@ class BackupService {
         const message = error instanceof Error ? error.message : String(error);
         throw classifyConnectFailure(message, config.kopiaRepoPath);
       }
+    }
+  }
+
+  // Re-key the local repository in place so a password change keeps the
+  // existing snapshots. Three defenses against the kopia#3049 lockout class:
+  // (1) connect with the OLD password first — refuse if it doesn't open the
+  // repo; (2) stash kopia-config* before touching it and restore on any
+  // failure; (3) after change-password, prove the NEW password reconnects
+  // before the caller persists it. On any failure the old password still
+  // works and nothing is persisted. Cloud repos are out of scope.
+  async rekeyRepository(oldPassword: string, newPassword: string): Promise<void> {
+    if (!hasRepositoryData(config.kopiaRepoPath)) {
+      // No repo yet — nothing to re-key; the new password is used when the
+      // repo is first created. Caller persists it.
+      kopiaClient.setPassword(newPassword);
+      this.initialized = false;
+      return;
+    }
+
+    kopiaClient.setPassword(oldPassword);
+    if (!(await kopiaClient.isRepositoryConnected())) {
+      try {
+        await kopiaClient.connectRepository();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error({ error }, 'Re-key aborted: cannot open repository with the current password');
+        throw classifyConnectFailure(message, config.kopiaRepoPath);
+      }
+    }
+
+    const stash = await this.stashKopiaConfig();
+    try {
+      await kopiaClient.changePassword(newPassword);
+    } catch (error) {
+      await this.restoreKopiaConfig(stash);
+      kopiaClient.setPassword(oldPassword);
+      logger.error(
+        { error },
+        'change-password failed; restored prior config, repository unchanged'
+      );
+      throw new Error(
+        'Could not change the repository password. Your existing backups are SAFE and the ' +
+          'previous password still works — nothing was changed.',
+        { cause: error }
+      );
+    }
+
+    try {
+      await kopiaClient.disconnectRepository();
+      kopiaClient.setPassword(newPassword);
+      await kopiaClient.connectRepository();
+    } catch (error) {
+      await this.restoreKopiaConfig(stash);
+      kopiaClient.setPassword(oldPassword);
+      try {
+        await kopiaClient.connectRepository();
+      } catch {
+        // best effort — the restored config still holds the working state
+      }
+      logger.error({ error }, 'Re-key could not be verified with the new password; rolled back');
+      throw new Error(
+        'The password change could not be verified, so it was rolled back. Your existing ' +
+          'backups are SAFE and the previous password still works.',
+        { cause: error }
+      );
+    }
+
+    await this.discardStash(stash);
+    this.initialized = true;
+    logger.info('Repository password changed and verified');
+  }
+
+  // Copy kopia-config and any kopia-config.* siblings aside so a failed
+  // re-key can be rolled back. Returns the list of (original, backup) pairs.
+  private async stashKopiaConfig(): Promise<Array<[string, string]>> {
+    const dir = dirname(config.kopiaConfigPath);
+    const prefix = basename(config.kopiaConfigPath);
+    const pairs: Array<[string, string]> = [];
+    let entries: string[];
+    try {
+      entries = await readdir(dir);
+    } catch {
+      return pairs;
+    }
+    for (const name of entries) {
+      if (name === prefix || name.startsWith(`${prefix}.`)) {
+        const original = join(dir, name);
+        const backup = `${original}.rekey-bak`;
+        try {
+          await copyFile(original, backup);
+          pairs.push([original, backup]);
+        } catch (error) {
+          logger.warn({ error, file: name }, 'Could not stash kopia config file');
+        }
+      }
+    }
+    return pairs;
+  }
+
+  private async restoreKopiaConfig(stash: Array<[string, string]>): Promise<void> {
+    for (const [original, backup] of stash) {
+      try {
+        await copyFile(backup, original);
+        await rm(backup, { force: true });
+      } catch (error) {
+        logger.warn({ error, file: original }, 'Could not restore stashed kopia config file');
+      }
+    }
+  }
+
+  private async discardStash(stash: Array<[string, string]>): Promise<void> {
+    for (const [, backup] of stash) {
+      await rm(backup, { force: true }).catch(() => {});
     }
   }
 
