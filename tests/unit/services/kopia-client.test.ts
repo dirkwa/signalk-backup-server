@@ -541,5 +541,19 @@ describe('KopiaClient', () => {
       redactValueFlags(args);
       expect(args).toEqual(['--new-password', 'secret']);
     });
+
+    it('leaves a trailing password flag with no value untouched', () => {
+      const args = ['repository', 'connect', '--password'];
+      expect(redactValueFlags(args)).toEqual(['repository', 'connect', '--password']);
+    });
+
+    it('masks multiple password flags in one command', () => {
+      const args = ['--password', 'secret1', '--new-password', 'secret2'];
+      expect(redactValueFlags(args)).toEqual(['--password', '***', '--new-password', '***']);
+    });
+
+    it('handles an empty array', () => {
+      expect(redactValueFlags([])).toEqual([]);
+    });
   });
 });
