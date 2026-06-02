@@ -205,6 +205,17 @@ class KopiaClient {
     });
   }
 
+  // Re-keys the currently connected repository; the caller MUST already be
+  // connected with the current password (set via setPassword). `sensitive`
+  // keeps the new password out of the command logs.
+  async changePassword(newPassword: string): Promise<void> {
+    await this.run(['repository', 'change-password', '--new-password', newPassword], {
+      timeout: SHORT_TIMEOUT_MS,
+      json: false,
+      sensitive: true,
+    });
+  }
+
   async createSnapshot(
     sourcePath: string,
     options: {
@@ -578,9 +589,9 @@ class KopiaClient {
 
   private async run(
     args: string[],
-    options: { timeout?: number; json?: boolean } = {}
+    options: { timeout?: number; json?: boolean; sensitive?: boolean } = {}
   ): Promise<unknown> {
-    const { json = true } = options;
+    const { json = true, sensitive = false } = options;
     let { timeout = DEFAULT_TIMEOUT_MS } = options;
 
     // When connected to a cloud repo via rclone, each kopia command starts a
@@ -601,7 +612,10 @@ class KopiaClient {
       KOPIA_PASSWORD: this.passwordOverride ?? this.password,
     };
 
-    logger.debug({ cmd: this.binaryPath, args: fullArgs }, 'Running kopia command');
+    // change-password passes the new password in argv (the only kopia command
+    // that does); mask it so secrets never reach the logs.
+    const logArgs = sensitive ? redactValueFlags(fullArgs) : fullArgs;
+    logger.debug({ cmd: this.binaryPath, args: logArgs }, 'Running kopia command');
 
     try {
       const { stdout, stderr } = await execFile(this.binaryPath, fullArgs, {
@@ -635,7 +649,7 @@ class KopiaClient {
 
       logger.error(
         {
-          args: fullArgs,
+          args: logArgs,
           exitCode: execError.code,
           error: errorMessage,
         },
@@ -645,6 +659,19 @@ class KopiaClient {
       throw new Error(`Kopia command failed: ${errorMessage}`, { cause: error });
     }
   }
+}
+
+// Mask the value that follows any --*password* flag so secrets passed in argv
+// (only change-password does this) never reach the logs. Matches the flag form
+// (leading --) so the `change-password` subcommand itself isn't treated as one.
+export function redactValueFlags(args: string[]): string[] {
+  const out = [...args];
+  for (let i = 0; i < out.length - 1; i++) {
+    if (/^--[\w-]*password/i.test(out[i]!)) {
+      out[i + 1] = '***';
+    }
+  }
+  return out;
 }
 
 /**

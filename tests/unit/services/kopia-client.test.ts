@@ -50,7 +50,7 @@ import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 
 // We need to import the module after mocking
-const { kopiaClient, parseKopiaLsOutput, KopiaEntryNotFoundError } = await import(
+const { kopiaClient, parseKopiaLsOutput, KopiaEntryNotFoundError, redactValueFlags } = await import(
   '../../../src/services/kopia-client.js'
 );
 
@@ -517,6 +517,43 @@ describe('KopiaClient', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe('redactValueFlags', () => {
+    it('masks the value following a password flag', () => {
+      const out = redactValueFlags([
+        'repository',
+        'change-password',
+        '--new-password',
+        'hunter2',
+      ]);
+      expect(out).toEqual(['repository', 'change-password', '--new-password', '***']);
+    });
+
+    it('leaves non-password args untouched', () => {
+      const args = ['snapshot', 'create', '/signalk-data', '--json'];
+      expect(redactValueFlags(args)).toEqual(args);
+    });
+
+    it('does not mutate the input array', () => {
+      const args = ['--new-password', 'secret'];
+      redactValueFlags(args);
+      expect(args).toEqual(['--new-password', 'secret']);
+    });
+
+    it('leaves a trailing password flag with no value untouched', () => {
+      const args = ['repository', 'connect', '--password'];
+      expect(redactValueFlags(args)).toEqual(['repository', 'connect', '--password']);
+    });
+
+    it('masks multiple password flags in one command', () => {
+      const args = ['--password', 'secret1', '--new-password', 'secret2'];
+      expect(redactValueFlags(args)).toEqual(['--password', '***', '--new-password', '***']);
+    });
+
+    it('handles an empty array', () => {
+      expect(redactValueFlags([])).toEqual([]);
     });
   });
 });
