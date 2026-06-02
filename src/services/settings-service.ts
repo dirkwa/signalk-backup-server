@@ -376,23 +376,13 @@ export class SettingsService {
     return !!settings.backupPassword;
   }
 
-  /**
-   * Set a custom backup password.
-   * This is the password used to OPEN the repository; it does not re-key an
-   * existing one. An existing repo must have been created with this password
-   * or the service refuses to connect on next restart (backups stay safe).
-   */
+  // Password used to OPEN the repository; does not re-key an existing one.
   async setBackupPassword(password: string): Promise<void> {
     await this.update({ backupPassword: password });
     logger.info('Custom backup password set');
   }
 
-  /**
-   * Reset to the default backup password.
-   * Only changes which password is used to OPEN the repository; does not
-   * re-key an existing one. A repo created with a custom password will
-   * refuse to connect (backups stay safe) until that password is set again.
-   */
+  // Resets which password opens the repository; does not re-key an existing one.
   async resetBackupPassword(): Promise<void> {
     const settings = await this.get();
     delete settings.backupPassword;

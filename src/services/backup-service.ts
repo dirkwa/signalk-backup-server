@@ -90,12 +90,7 @@ const DB_PLUGIN_DEFAULT_EXCLUSIONS = [
 
 const CA_FILES = ['ca-cert.pem', 'ca-key.pem'];
 
-/**
- * True when the kopia storage directory exists AND holds at least one
- * entry. An empty directory is treated as absent so `repository create`
- * stays valid for it; a non-empty one means a repo we must `connect` to,
- * never create over.
- */
+// An empty/absent dir is safe to `repository create`; non-empty means a repo we must connect to, never create over.
 export function hasRepositoryData(repoPath: string): boolean {
   if (!existsSync(repoPath)) return false;
   try {
@@ -106,11 +101,7 @@ export function hasRepositoryData(repoPath: string): boolean {
   }
 }
 
-/**
- * Turn a raw kopia connect-failure stderr into a user-actionable error.
- * The repository storage is never modified by a failed connect, so every
- * branch reassures the user their backups are safe.
- */
+// A failed connect never modifies storage, so every branch reassures the user their backups are safe.
 export function classifyConnectFailure(stderr: string, repoPath: string): Error {
   if (
     /password is invalid|access denied|invalid password|invalid repository password/i.test(stderr)
@@ -214,19 +205,8 @@ class BackupService {
     }
   }
 
-  /**
-   * Reconnect to a repository whose storage already holds data.
-   *
-   * Storage exists, so we MUST connect — never `repository create`, which
-   * kopia refuses over existing data ("found existing data in storage
-   * location") and which, if it ever did succeed, would orphan the user's
-   * snapshots behind a fresh empty repo. The previous code's catch ->
-   * initRepository() fallback both swallowed the real connect failure and
-   * attempted exactly that destructive create. A lost/stale kopia-config
-   * is recoverable: `repository connect` rebuilds connection state from the
-   * repo's own format blobs given the right password. A password mismatch
-   * is NOT auto-recoverable, so we surface it with the data-is-safe wording.
-   */
+  // Storage exists, so connect — never create-over (kopia refuses, and a create would orphan snapshots).
+  // A lost kopia-config is recoverable via connect; a password mismatch is not, so we classify the failure.
   private async connectExistingRepository(): Promise<void> {
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {

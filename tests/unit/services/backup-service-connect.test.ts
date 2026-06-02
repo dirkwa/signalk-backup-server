@@ -1,12 +1,3 @@
-/**
- * Repository connect/create safety tests.
- *
- * Covers the two pure helpers that guard the init path against the
- * "found existing data in storage location" failure: never create over
- * existing storage, and turn a raw kopia connect failure into an
- * actionable, data-is-safe message.
- */
-
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('fs', () => ({

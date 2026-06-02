@@ -1546,16 +1546,7 @@ api.get(
   }
 );
 
-/**
- * PUT /api/backups/password
- * Change the backup password.
- *
- * This sets the password the service will use to OPEN the repository — it
- * does NOT re-key an existing Kopia repository (kopia has no in-place
- * re-key here). On an existing repo the password must match the one the
- * repo was created with, or the service refuses to connect (data stays
- * safe). For a fresh/empty repo, this password is used at creation.
- */
+// Sets the password used to OPEN the repository; it does NOT re-key an existing one (kopia has no in-place re-key here).
 api.put(
   '/password',
   {
@@ -1618,16 +1609,7 @@ api.put(
   }
 );
 
-/**
- * DELETE /api/backups/password
- * Reset to the default backup password.
- *
- * Like PUT, this only changes which password the service uses to OPEN the
- * repository; it does NOT re-key an existing one. If the repo was created
- * with a custom password, resetting to the default will make the service
- * refuse to connect (data stays safe) until the custom password is set
- * again.
- */
+// Resets which password opens the repository; like PUT it does NOT re-key an existing one.
 api.delete(
   '/password',
   {
