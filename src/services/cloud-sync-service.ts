@@ -270,7 +270,7 @@ export function parseKopiaSyncProgress(line: string, progress: SyncProgress): Sy
   return progress;
 }
 
-interface CloudSyncStatus {
+export interface CloudSyncStatus {
   /** Active cloud provider (currently only `gdrive` is implemented). */
   provider: CloudSyncProvider;
   /** Whether the active provider is connected. */
