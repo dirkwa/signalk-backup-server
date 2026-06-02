@@ -1546,17 +1546,15 @@ api.get(
   }
 );
 
-/**
- * PUT /api/backups/password
- * Change the backup password.
- * WARNING: Requires re-creating the Kopia repository (existing backups are lost).
- */
+// Sets the password used to OPEN the repository; it does NOT re-key an existing one (kopia has no in-place re-key here).
 api.put(
   '/password',
   {
     summary: 'Change backup password',
     description:
-      'Set a custom backup password. WARNING: Requires re-creating the Kopia repository, which means existing backups are lost.',
+      'Set the password used to open the backup repository. This does NOT re-key an existing ' +
+      'repository: on an existing repo the password must match the one it was created with, ' +
+      'or the service will refuse to connect (existing backups stay safe and unmodified).',
     body: changePasswordSchema,
     responses: {
       200: { description: 'Password changed successfully' },
@@ -1588,7 +1586,9 @@ api.put(
         data: {
           hasCustomPassword: true,
           message:
-            'Password changed. Repository will be re-created on next backup service restart.',
+            'Backup password saved. It is used to open the repository, not to re-key it: ' +
+            'an existing repository must have been created with this password, otherwise the ' +
+            'service will refuse to connect on next restart (your backups remain safe).',
         },
         timestamp: new Date().toISOString(),
       };
@@ -1609,17 +1609,15 @@ api.put(
   }
 );
 
-/**
- * DELETE /api/backups/password
- * Reset to default backup password.
- * WARNING: Requires re-creating the Kopia repository (existing backups are lost).
- */
+// Resets which password opens the repository; like PUT it does NOT re-key an existing one.
 api.delete(
   '/password',
   {
     summary: 'Reset backup password to default',
     description:
-      'Resets the backup password to the default value. WARNING: Requires re-creating the Kopia repository, which means existing backups are lost.',
+      'Resets the backup password to the default value used to open the repository. This does ' +
+      'NOT re-key an existing repository: if it was created with a custom password the service ' +
+      'will refuse to connect (existing backups stay safe) until that password is set again.',
     responses: {
       200: { description: 'Password reset to default' },
       500: { description: 'Failed to reset password' },
@@ -1634,7 +1632,10 @@ api.delete(
         data: {
           hasCustomPassword: false,
           message:
-            'Password reset to default. Repository will be re-created on next backup service restart.',
+            'Backup password reset to default. This only changes which password is used to open ' +
+            'the repository — it does not re-key an existing one. If the repository was created ' +
+            'with a custom password, set it again or the service will refuse to connect (your ' +
+            'backups remain safe).',
         },
         timestamp: new Date().toISOString(),
       };

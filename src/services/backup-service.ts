@@ -1,4 +1,4 @@
-import { createReadStream, createWriteStream, existsSync } from 'fs';
+import { createReadStream, createWriteStream, existsSync, readdirSync } from 'fs';
 import { mkdir, rm, readdir, stat, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { ZipArchive } from 'archiver';
@@ -90,6 +90,39 @@ const DB_PLUGIN_DEFAULT_EXCLUSIONS = [
 
 const CA_FILES = ['ca-cert.pem', 'ca-key.pem'];
 
+// An empty/absent dir is safe to `repository create`; non-empty means a repo we must connect to, never create over.
+export function hasRepositoryData(repoPath: string): boolean {
+  if (!existsSync(repoPath)) return false;
+  try {
+    return readdirSync(repoPath).length > 0;
+  } catch {
+    // Unreadable directory: assume it holds data so we never create over it.
+    return true;
+  }
+}
+
+// A failed connect never modifies storage, so every branch reassures the user their backups are safe.
+export function classifyConnectFailure(stderr: string, repoPath: string): Error {
+  if (
+    /password is invalid|access denied|invalid password|invalid repository password/i.test(stderr)
+  ) {
+    return new Error(
+      'Your existing backups are SAFE. The configured backup password does not match ' +
+        'the one the repository was created with. Set the original password (the one used ' +
+        'when backups were first created) and restart. The repository will NOT be modified.'
+    );
+  }
+  if (/found existing data in storage location/i.test(stderr)) {
+    return new Error(
+      'Your existing backups are SAFE, but the local connection state (kopia-config) is ' +
+        'missing or stale. Reconnect from a shell with: ' +
+        `kopia repository connect filesystem --path ${repoPath} ` +
+        '(using your backup password). The repository will NOT be re-created.'
+    );
+  }
+  return new Error(`Cannot connect to the existing Kopia repository (backups are safe): ${stderr}`);
+}
+
 /**
  * Convert a Kopia snapshot to BackupMetadata for API compatibility
  */
@@ -145,18 +178,10 @@ class BackupService {
       const connected = await kopiaClient.isRepositoryConnected();
 
       if (!connected) {
-        // Try to connect to existing repository first
-        if (existsSync(config.kopiaRepoPath)) {
-          try {
-            await kopiaClient.connectRepository();
-            logger.info('Connected to existing Kopia repository');
-          } catch {
-            // Repository exists but can't connect - might be corrupted or password mismatch
-            logger.warn('Failed to connect to existing repository, creating new one');
-            await kopiaClient.initRepository();
-          }
+        if (hasRepositoryData(config.kopiaRepoPath)) {
+          await this.connectExistingRepository();
         } else {
-          // Fresh installation - create new repository
+          // Genuinely empty/absent storage — safe to create.
           await kopiaClient.initRepository();
           logger.info('Created new Kopia repository');
         }
@@ -177,6 +202,30 @@ class BackupService {
     } catch (error) {
       logger.error({ error }, 'Failed to initialize backup service');
       throw error;
+    }
+  }
+
+  // Storage exists, so connect — never create-over (kopia refuses, and a create would orphan snapshots).
+  // A lost kopia-config is recoverable via connect; a password mismatch is not, so we classify the failure.
+  private async connectExistingRepository(): Promise<void> {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        await kopiaClient.connectRepository();
+        logger.info(
+          attempt === 1
+            ? 'Connected to existing Kopia repository'
+            : 'Connected to existing Kopia repository (after retry)'
+        );
+        return;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (attempt === 1) {
+          logger.warn({ err: message }, 'Kopia connect failed, retrying');
+          continue;
+        }
+        logger.error({ err: message }, 'Cannot connect to existing Kopia repository');
+        throw classifyConnectFailure(message, config.kopiaRepoPath);
+      }
     }
   }
 

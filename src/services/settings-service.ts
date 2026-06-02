@@ -376,19 +376,13 @@ export class SettingsService {
     return !!settings.backupPassword;
   }
 
-  /**
-   * Set a custom backup password.
-   * WARNING: Requires re-creating the Kopia repository.
-   */
+  // Password used to OPEN the repository; does not re-key an existing one.
   async setBackupPassword(password: string): Promise<void> {
     await this.update({ backupPassword: password });
     logger.info('Custom backup password set');
   }
 
-  /**
-   * Reset to the default backup password.
-   * WARNING: Requires re-creating the Kopia repository.
-   */
+  // Resets which password opens the repository; does not re-key an existing one.
   async resetBackupPassword(): Promise<void> {
     const settings = await this.get();
     delete settings.backupPassword;
