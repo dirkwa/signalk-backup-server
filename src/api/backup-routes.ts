@@ -1546,6 +1546,30 @@ api.get(
   }
 );
 
+// After a local re-key the cloud repo is a separate Kopia repo seeded with the
+// OLD password; one additive sync-to pushes the new key-wrapper so it opens
+// with the new password (no re-seed, no blobs re-uploaded). Fire it in the
+// background and tell the caller whether one was started so the message can
+// warn about the stale window. Returns the user-facing message.
+export async function rekeyMessageAndCloudResync(rekeyMessage: string): Promise<string> {
+  let cloudConnected = false;
+  try {
+    cloudConnected = (await cloudSyncService.getStatus()).connected;
+  } catch (error) {
+    logger.warn({ error }, 'Could not determine cloud sync status after re-key');
+  }
+  if (!cloudConnected) return rekeyMessage;
+
+  cloudSyncService.syncToCloud().catch((error) => {
+    logger.error({ error }, 'Post-rekey cloud sync failed');
+  });
+  return (
+    `${rekeyMessage} Your cloud copy is still encrypted with the previous password and is ` +
+    'temporarily out of date — a sync has been started to update it. Do not restore from the ' +
+    'cloud, and do not delete your old cloud backups, until that sync completes.'
+  );
+}
+
 // Re-keys the existing repository in place (kopia repository change-password) so backups are preserved.
 api.put(
   '/password',
@@ -1583,11 +1607,15 @@ api.put(
       await backupService.rekeyRepository(currentPassword, password);
       await settingsService.setBackupPassword(password);
 
+      const message = await rekeyMessageAndCloudResync(
+        'Backup password changed. Your existing backups were re-keyed and preserved.'
+      );
+
       const response: ApiResponse<{ hasCustomPassword: boolean; message: string }> = {
         success: true,
         data: {
           hasCustomPassword: true,
-          message: 'Backup password changed. Your existing backups were re-keyed and preserved.',
+          message,
         },
         timestamp: new Date().toISOString(),
       };
@@ -1627,12 +1655,15 @@ api.delete(
       await backupService.rekeyRepository(currentPassword, DEFAULT_KOPIA_PASSWORD);
       await settingsService.resetBackupPassword();
 
+      const message = await rekeyMessageAndCloudResync(
+        'Backup password reset to default. Your existing backups were re-keyed and preserved.'
+      );
+
       const response: ApiResponse<{ hasCustomPassword: boolean; message: string }> = {
         success: true,
         data: {
           hasCustomPassword: false,
-          message:
-            'Backup password reset to default. Your existing backups were re-keyed and preserved.',
+          message,
         },
         timestamp: new Date().toISOString(),
       };
