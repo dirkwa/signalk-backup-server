@@ -82,7 +82,9 @@ If the engine logs `Kopia command failed: unable to get repository storage: foun
   kopia repository connect filesystem \
     --path "$DATA_DIR/kopia-repo" \
     --config-file "$DATA_DIR/kopia-config"
-  # with KOPIA_PASSWORD set to your backup password (default: keeperbackup)
+  # with KOPIA_PASSWORD set to your backup password — if you never set a
+  # custom one, it is the engine's built-in default (DEFAULT_KOPIA_PASSWORD
+  # in src/services/settings-service.ts)
   ```
 
 - **Password mismatch** (the configured password is not the one the repo was created with). Set the original password and restart. Your backups are safe — the repository is never re-created over existing data.
