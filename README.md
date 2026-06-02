@@ -53,9 +53,43 @@ All routes mounted under `/api/`. Full OpenAPI spec at `/api/openapi.json` and S
 | Cloud sync          | `GET /api/cloud/status`, `POST /api/cloud/sync`, `GET /api/cloud/installs`, `POST /api/cloud/restore/prepare`, `POST /api/cloud/restore/start`, `POST /api/cloud/restore/reset`          |
 | GDrive              | `POST /api/cloud/gdrive/connect`, `POST /api/cloud/gdrive/disconnect`, `POST /api/cloud/gdrive/auth-state`, `POST /api/cloud/gdrive/auth-callback`, `POST /api/cloud/gdrive/cancel`      |
 | Settings            | `GET /api/settings`, `PUT /api/settings`                                                                                                                                                 |
+| Password            | `GET /api/backups/password`, `PUT /api/backups/password` (change — re-keys in place), `DELETE /api/backups/password` (reset to default)                                                  |
 | Operations          | `GET /api/operations`, `GET /api/operations/:id`                                                                                                                                         |
 | Health              | `GET /api/health`                                                                                                                                                                        |
 | GUI URL             | `GET /api/gui-url` _(legacy — the plugin's webapp now serves the user-facing UI; this route is kept for backwards compat with older signalk-backup releases)_                            |
+
+## Backup password
+
+The Kopia repository is always encrypted. With no custom password set the engine uses a built-in default (so first-run backups work without any setup); a custom password is stored in `settings.json` (mode `0600`) under `DATA_DIR`.
+
+Changing the password (`PUT /api/backups/password`) **re-keys the existing repository in place** (`kopia repository change-password`) — your existing snapshots are preserved, not discarded. The change is guarded so a failure can never lock you out:
+
+1. The engine connects with the current password first and refuses if it can't open the repo.
+2. It stashes the `kopia-config*` connection state before re-keying and restores it on any failure.
+3. After re-keying it verifies the new password reconnects before persisting it.
+
+On any failure at those steps nothing is persisted and the previous password keeps working. `DELETE /api/backups/password` resets to the default password the same way.
+
+**Cloud copies (Google Drive / SMB) share the repository password.** A re-key only rewrites the small key-wrapper blob locally, so the cloud copy is briefly still on the previous password until one sync pushes the new wrapper up. After a re-key the engine starts that sync automatically; until it completes, do **not** restore from the cloud and do **not** delete the old cloud backups (they remain the only consistent copy if the sync fails). No full re-seed is needed — the content blobs are unchanged.
+
+## Repository recovery
+
+If the engine logs `Kopia command failed: unable to get repository storage: found existing data in storage location`, the repository data is intact but the engine could not _connect_ to it. The two causes:
+
+- **Lost or stale `kopia-config`** (repo present, connection state gone). The engine reconnects automatically on the next start (≥ 0.6.7). To reconnect manually from a shell inside the container:
+
+  ```bash
+  kopia repository connect filesystem \
+    --path "$DATA_DIR/kopia-repo" \
+    --config-file "$DATA_DIR/kopia-config"
+  # with KOPIA_PASSWORD set to your backup password — if you never set a
+  # custom one, it is the engine's built-in default (DEFAULT_KOPIA_PASSWORD
+  # in src/services/settings-service.ts)
+  ```
+
+- **Password mismatch** (the configured password is not the one the repo was created with). Set the original password and restart. Your backups are safe — the repository is never re-created over existing data.
+
+Versions before 0.6.7 could mask the real cause by attempting to create a new repository over the existing one; ≥ 0.6.7 never does this and surfaces the actual reason instead.
 
 ## Direct run (debugging)
 
