@@ -214,9 +214,8 @@ class BackupService {
     this.initialized = false;
     try {
       await kopiaClient.disconnectRepository();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      logger.warn({ err: message }, 'Kopia disconnect during reset failed (continuing)');
+    } catch (error) {
+      logger.warn({ error }, 'Kopia disconnect during reset failed (continuing)');
     }
   }
 
@@ -232,13 +231,13 @@ class BackupService {
             : 'Connected to existing Kopia repository (after retry)'
         );
         return;
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+      } catch (error) {
         if (attempt === 1) {
-          logger.warn({ err: message }, 'Kopia connect failed, retrying');
+          logger.warn({ error }, 'Kopia connect failed, retrying');
           continue;
         }
-        logger.error({ err: message }, 'Cannot connect to existing Kopia repository');
+        logger.error({ error }, 'Cannot connect to existing Kopia repository');
+        const message = error instanceof Error ? error.message : String(error);
         throw classifyConnectFailure(message, config.kopiaRepoPath);
       }
     }
