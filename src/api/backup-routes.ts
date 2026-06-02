@@ -1580,6 +1580,7 @@ api.put(
       }
 
       await settingsService.setBackupPassword(password);
+      await backupService.resetInitialization();
 
       const response: ApiResponse<{ hasCustomPassword: boolean; message: string }> = {
         success: true,
@@ -1588,7 +1589,7 @@ api.put(
           message:
             'Backup password saved. It is used to open the repository, not to re-key it: ' +
             'an existing repository must have been created with this password, otherwise the ' +
-            'service will refuse to connect on next restart (your backups remain safe).',
+            'service will refuse to connect on the next operation (your backups remain safe).',
         },
         timestamp: new Date().toISOString(),
       };
@@ -1626,6 +1627,7 @@ api.delete(
   async (_req: Request, res: Response) => {
     try {
       await settingsService.resetBackupPassword();
+      await backupService.resetInitialization();
 
       const response: ApiResponse<{ hasCustomPassword: boolean; message: string }> = {
         success: true,

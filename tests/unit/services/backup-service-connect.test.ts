@@ -28,7 +28,9 @@ vi.mock('../../../src/services/logger.js', () => ({
 }));
 
 vi.mock('../../../src/services/kopia-client.js', () => ({
-  kopiaClient: {},
+  kopiaClient: {
+    disconnectRepository: vi.fn(),
+  },
 }));
 
 vi.mock('../../../src/services/settings-service.js', () => ({
@@ -40,10 +42,16 @@ vi.mock('../../../src/services/version-service.js', () => ({
 }));
 
 import { existsSync, readdirSync } from 'fs';
-import { hasRepositoryData, classifyConnectFailure } from '../../../src/services/backup-service.js';
+import {
+  hasRepositoryData,
+  classifyConnectFailure,
+  backupService,
+} from '../../../src/services/backup-service.js';
+import { kopiaClient } from '../../../src/services/kopia-client.js';
 
 const mockedExistsSync = vi.mocked(existsSync);
 const mockedReaddirSync = vi.mocked(readdirSync);
+const mockedDisconnect = vi.mocked(kopiaClient.disconnectRepository);
 
 describe('hasRepositoryData', () => {
   beforeEach(() => {
@@ -104,5 +112,29 @@ describe('classifyConnectFailure', () => {
     const err = classifyConnectFailure('some unexpected kopia error', '/data/kopia-repo');
     expect(err.message).toMatch(/backups are safe/i);
     expect(err.message).toContain('some unexpected kopia error');
+  });
+});
+
+describe('resetInitialization', () => {
+  const setInitialized = (value: boolean) => {
+    (backupService as unknown as { initialized: boolean }).initialized = value;
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setInitialized(true);
+  });
+
+  it('disconnects the repository so the next init reconnects with the new password', async () => {
+    mockedDisconnect.mockResolvedValue(undefined);
+    await backupService.resetInitialization();
+    expect(mockedDisconnect).toHaveBeenCalledTimes(1);
+    expect(backupService.isInitialized()).toBe(false);
+  });
+
+  it('still clears the cache when disconnect fails (repo not connected yet)', async () => {
+    mockedDisconnect.mockRejectedValue(new Error('not connected'));
+    await expect(backupService.resetInitialization()).resolves.toBeUndefined();
+    expect(backupService.isInitialized()).toBe(false);
   });
 });

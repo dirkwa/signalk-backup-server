@@ -205,6 +205,20 @@ class BackupService {
     }
   }
 
+  // After a password change the in-memory password and the live kopia
+  // connection are both stale. Disconnect and clear the cache so the next
+  // operation re-reads the password and reconnects with it (or surfaces a
+  // data-safe mismatch error) instead of silently using the old one until
+  // a process restart.
+  async resetInitialization(): Promise<void> {
+    this.initialized = false;
+    try {
+      await kopiaClient.disconnectRepository();
+    } catch (error) {
+      logger.warn({ error }, 'Kopia disconnect during reset failed (continuing)');
+    }
+  }
+
   // Storage exists, so connect — never create-over (kopia refuses, and a create would orphan snapshots).
   // A lost kopia-config is recoverable via connect; a password mismatch is not, so we classify the failure.
   private async connectExistingRepository(): Promise<void> {
@@ -217,13 +231,13 @@ class BackupService {
             : 'Connected to existing Kopia repository (after retry)'
         );
         return;
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+      } catch (error) {
         if (attempt === 1) {
-          logger.warn({ err: message }, 'Kopia connect failed, retrying');
+          logger.warn({ error }, 'Kopia connect failed, retrying');
           continue;
         }
-        logger.error({ err: message }, 'Cannot connect to existing Kopia repository');
+        logger.error({ error }, 'Cannot connect to existing Kopia repository');
+        const message = error instanceof Error ? error.message : String(error);
         throw classifyConnectFailure(message, config.kopiaRepoPath);
       }
     }
