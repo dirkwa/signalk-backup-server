@@ -378,7 +378,9 @@ export class SettingsService {
 
   /**
    * Set a custom backup password.
-   * WARNING: Requires re-creating the Kopia repository.
+   * This is the password used to OPEN the repository; it does not re-key an
+   * existing one. An existing repo must have been created with this password
+   * or the service refuses to connect on next restart (backups stay safe).
    */
   async setBackupPassword(password: string): Promise<void> {
     await this.update({ backupPassword: password });
@@ -387,7 +389,9 @@ export class SettingsService {
 
   /**
    * Reset to the default backup password.
-   * WARNING: Requires re-creating the Kopia repository.
+   * Only changes which password is used to OPEN the repository; does not
+   * re-key an existing one. A repo created with a custom password will
+   * refuse to connect (backups stay safe) until that password is set again.
    */
   async resetBackupPassword(): Promise<void> {
     const settings = await this.get();
