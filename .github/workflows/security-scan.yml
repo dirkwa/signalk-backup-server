@@ -1,0 +1,71 @@
+name: Security Scan
+
+# Trivy CVE scan of the published container image.
+#
+# Builds the amd64 image from the current Dockerfile and scans it for known
+# vulnerabilities in three layers:
+#   - npm packages baked into node_modules
+#   - the node:24-trixie-slim base (OS packages)
+#   - the hand-installed kopia / rclone binaries (pinned by ARG in the
+#     Dockerfile) — a newly-disclosed CVE here is a signal to bump the
+#     KOPIA_VERSION / RCLONE_VERSION arg.
+#
+# Runs weekly (not on PRs) so freshly-disclosed CVEs surface even when no
+# code changed, without adding a QEMU image build to every PR. Results land
+# in the Security → Code scanning tab.
+#
+# Tuned to report only ACTIONABLE findings:
+#   - ignore-unfixed: drop CVEs with no fixed version (e.g. kernel headers) —
+#     they are noise we cannot resolve here.
+#   - severity HIGH,CRITICAL: skip the low/medium OS-package churn.
+# This is informational; it does not gate anything.
+
+on:
+  schedule:
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  security-scan:
+    if: github.repository == 'dirkwa/signalk-backup-server'
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          # No later step performs git operations — don't leave the token
+          # in the workspace.
+          persist-credentials: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build image (amd64, no push)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: signalk-backup-server:scan
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: 'signalk-backup-server:scan'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          ignore-unfixed: true
+          severity: 'HIGH,CRITICAL'
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: 'trivy-docker'
