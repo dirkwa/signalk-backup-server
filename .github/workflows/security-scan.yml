@@ -37,6 +37,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+        with:
+          # No later step performs git operations — don't leave the token
+          # in the workspace.
+          persist-credentials: false
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
