@@ -49,7 +49,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Install Kopia (content-addressable deduplicated snapshots)
-ARG KOPIA_VERSION=0.22.3
+ARG KOPIA_VERSION=0.23.1
 ARG TARGETARCH
 RUN KOPIA_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "x64") && \
     wget -q "https://github.com/kopia/kopia/releases/download/v${KOPIA_VERSION}/kopia-${KOPIA_VERSION}-linux-${KOPIA_ARCH}.tar.gz" -O /tmp/kopia.tar.gz && \
@@ -59,7 +59,7 @@ RUN KOPIA_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "x64") && \
     rm /tmp/kopia.tar.gz
 
 # Install rclone (Google Drive sync transport)
-ARG RCLONE_VERSION=1.69.2
+ARG RCLONE_VERSION=1.74.3
 RUN wget -q "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-${TARGETARCH}.zip" \
         -O /tmp/rclone.zip && \
     unzip -j /tmp/rclone.zip '*/rclone' -d /usr/local/bin/ && \
