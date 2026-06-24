@@ -28,7 +28,7 @@ FROM node:24-trixie-slim AS backend-builder
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 
 COPY tsconfig.json ./
 COPY src/ ./src/
@@ -73,7 +73,7 @@ RUN apt-get purge -y --auto-remove wget unzip \
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=backend-builder /app/dist ./dist
 
