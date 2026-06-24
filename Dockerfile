@@ -72,8 +72,16 @@ RUN apt-get purge -y --auto-remove wget unzip \
 
 WORKDIR /app
 
+# Install prod deps with npm, then remove npm itself: the runtime only runs
+# `node dist/server.js`, never a package manager. npm bundles its own copies
+# of tar/undici etc. under node_modules/npm, which Trivy flags as CVEs even
+# though they are never invoked here. Dropping npm clears those findings and
+# trims the image. Done in one layer so the removed files leave no trace.
 COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev \
+ && npm cache clean --force \
+ && rm -rf /usr/local/lib/node_modules/npm \
+           /usr/local/bin/npm /usr/local/bin/npx
 
 COPY --from=backend-builder /app/dist ./dist
 
