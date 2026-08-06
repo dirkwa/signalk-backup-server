@@ -1,0 +1,43 @@
+name: release-please
+
+# Maintains a standing Release PR from the conventional commits on main
+# (version bump + changelog); merging that PR creates the vX.Y.Z tag and
+# the GitHub Release. Publishing stays in publish.yml — but a tag pushed
+# with GITHUB_TOKEN never triggers other workflows (GitHub's recursion
+# guard), so this workflow dispatches publish.yml explicitly:
+# workflow_dispatch is the documented exception to that guard. The
+# dispatch targets the tag ref, so the publish run builds the tagged
+# tree even if main has moved on.
+
+on:
+  push:
+    branches: [main]
+
+# Serialize runs: two rapid pushes must not race over the same Release PR.
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          release-type: node
+
+      - name: Dispatch image publish for the new release
+        if: ${{ steps.release.outputs.release_created }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: |
+          gh workflow run publish.yml --repo "${{ github.repository }}" \
+            --ref "${TAG}" -f tag="${TAG#v}"
