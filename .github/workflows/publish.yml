@@ -65,13 +65,16 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
           # Build the image tag list. Stable releases get :VERSION + :latest;
-          # prereleases (containing -beta. or -rc.) get :VERSION only, so a
-          # `v1.2.3-rc.1` push never overwrites the stable :latest pointer.
+          # prereleases (any prerelease suffix: -beta.1, -rc.1, -alpha.1, …)
+          # get :VERSION only, so a prerelease push never overwrites the
+          # stable :latest pointer. Strip +build metadata before testing —
+          # semver allows hyphens inside it (1.2.3+build-1 is stable).
+          CORE="${VERSION%%+*}"
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
           {
             echo 'tags<<EOF'
             echo "${IMAGE}:${VERSION}"
-            if [[ "${VERSION}" != *-beta.* && "${VERSION}" != *-rc.* ]]; then
+            if [[ "${CORE}" != *-* ]]; then
               echo "${IMAGE}:latest"
             fi
             echo 'EOF'
@@ -116,12 +119,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Same rule as the :latest decision above: prerelease iff the semver
+      # core (build metadata stripped) carries a -suffix.
+      - name: Classify prerelease
+        id: classify
+        run: |
+          CORE="${GITHUB_REF_NAME#v}"
+          CORE="${CORE%%+*}"
+          if [[ "${CORE}" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           generate_release_notes: true
-          prerelease: ${{ contains(github.ref_name, '-beta.') || contains(github.ref_name, '-rc.') }}
+          prerelease: ${{ steps.classify.outputs.prerelease }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
