@@ -203,8 +203,7 @@ function schemaToParameters(
 ): Array<Record<string, unknown>> {
   const params: Array<Record<string, unknown>> = [];
   const properties = (schema as Record<string, unknown>).properties as
-    | Record<string, TSchema>
-    | undefined;
+    Record<string, TSchema> | undefined;
   const required = ((schema as Record<string, unknown>).required as string[]) ?? [];
 
   if (!properties) return params;

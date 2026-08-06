@@ -29,11 +29,7 @@ export interface PaginatedResponse<T> extends ApiResponse<T[]> {
 
 /** WebSocket message types */
 export type WsMessageType =
-  | 'log'
-  | 'container_status'
-  | 'update_progress'
-  | 'health_status'
-  | 'backup_progress';
+  'log' | 'container_status' | 'update_progress' | 'health_status' | 'backup_progress';
 
 /** WebSocket message wrapper */
 export interface WsMessage<T = unknown> {

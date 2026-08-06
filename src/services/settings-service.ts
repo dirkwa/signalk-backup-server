@@ -109,9 +109,7 @@ export interface SmbCloudSyncSettings extends CloudSyncSettingsBase {
  *  4. extending `migrateCloudSyncSettings()` below if needed.
  */
 export type CloudSyncSettings =
-  | GDriveCloudSyncSettings
-  | LocalCloudSyncSettings
-  | SmbCloudSyncSettings;
+  GDriveCloudSyncSettings | LocalCloudSyncSettings | SmbCloudSyncSettings;
 
 /**
  * Migrate an arbitrary loaded `cloudSync` blob into the canonical
@@ -258,8 +256,7 @@ export class SettingsService {
 
       // Migration: convert old encryption.password to backupPassword
       const legacy = (loaded as Record<string, unknown>).encryption as
-        | { enabled?: boolean; password?: string }
-        | undefined;
+        { enabled?: boolean; password?: string } | undefined;
       if (legacy?.enabled && legacy.password) {
         this.settings.backupPassword = legacy.password;
         delete (loaded as Record<string, unknown>).encryption;
