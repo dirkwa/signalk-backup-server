@@ -59,7 +59,7 @@ RUN KOPIA_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "x64") && \
     rm /tmp/kopia.tar.gz
 
 # Install rclone (Google Drive sync transport)
-ARG RCLONE_VERSION=1.74.3
+ARG RCLONE_VERSION=1.75.0
 RUN wget -q "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-${TARGETARCH}.zip" \
         -O /tmp/rclone.zip && \
     unzip -j /tmp/rclone.zip '*/rclone' -d /usr/local/bin/ && \
