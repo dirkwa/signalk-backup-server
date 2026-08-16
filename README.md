@@ -156,7 +156,7 @@ use it in education and research; and provide professional services around it.
 npm package, container image or otherwise. Verbatim copies of official releases
 (including the published container images) may be mirrored and cached.
 
-Versions 0.7.0 and earlier remain available under the Apache-2.0 license, see
+Versions 0.7.1 and earlier remain available under the Apache-2.0 license, see
 [LICENSE-Apache-2.0-through-v0.x.txt](LICENSE-Apache-2.0-through-v0.x.txt).
 
 ## Contributing
