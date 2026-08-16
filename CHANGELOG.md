@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0](https://github.com/dirkwa/signalk-backup-server/compare/v0.7.1...v1.0.0) (2026-08-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* signalk-backup-server is no longer Apache-2.0 licensed. From 1.0.0 it is source-available under LICENSE.md: running it on your own boat or fleet (private or commercial) and modifying it for your own use remain free; redistributing it or publishing modified versions is no longer permitted. Verbatim copies of official releases may still be mirrored and cached. Versions 0.7.0 and earlier remain Apache-2.0.
+
+### Miscellaneous Chores
+
+* relicense from Apache-2.0 to source-available ([#116](https://github.com/dirkwa/signalk-backup-server/issues/116)) ([a6f0995](https://github.com/dirkwa/signalk-backup-server/commit/a6f09952348686296f124a0baec0cc400703017c))
+
 ## [0.7.1](https://github.com/dirkwa/signalk-backup-server/compare/v0.7.0...v0.7.1) (2026-08-06)
 
 
