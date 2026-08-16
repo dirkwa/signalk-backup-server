@@ -85,6 +85,10 @@ RUN npm ci --omit=dev \
 
 COPY --from=backend-builder /app/dist ./dist
 
+# Ship the license terms inside the image: LICENSE.md requires that copies
+# of official releases carry these notices.
+COPY LICENSE.md LICENSE-Apache-2.0-through-v0.x.txt ./
+
 # DATA_DIR is the only path that needs to exist before start; everything
 # else (kopia repo, rclone.conf, install-id) is created on demand under it.
 RUN mkdir -p /data
@@ -126,5 +130,5 @@ ARG VERSION
 LABEL org.opencontainers.image.title="signalk-backup-server" \
       org.opencontainers.image.description="Headless backup engine for the signalk-backup plugin" \
       org.opencontainers.image.source="https://github.com/dirkwa/signalk-backup-server" \
-      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.licenses="LicenseRef-Source-Available-No-Redistribution" \
       org.opencontainers.image.version="${VERSION}"
