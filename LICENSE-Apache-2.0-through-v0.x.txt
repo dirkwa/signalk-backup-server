@@ -1,4 +1,4 @@
-This Apache-2.0 license applied to signalk-backup-server version 0.7.0 and
+This Apache-2.0 license applied to signalk-backup-server version 0.7.1 and
 all earlier releases. Those versions remain available under Apache-2.0 in
 perpetuity. Version 1.0.0 and later are licensed under the terms in LICENSE.md.
 
