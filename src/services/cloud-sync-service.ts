@@ -270,6 +270,35 @@ export function parseKopiaSyncProgress(line: string, progress: SyncProgress): Sy
   return progress;
 }
 
+// Unconditional --delete: each install owns its server-UUID-derived folder, and without it the destination keeps every blob retention removed locally.
+export function buildRcloneSyncArgs(
+  direction: 'sync-to',
+  remotePath: string,
+  rcloneFlags: string[]
+): string[] {
+  return [
+    'repository',
+    direction,
+    'rclone',
+    '--remote-path',
+    remotePath,
+    '--rclone-exe',
+    config.rcloneBinaryPath,
+    '--rclone-startup-timeout=120s',
+    `--rclone-args=--config=${config.rcloneConfigPath}`,
+    '--rclone-args=--transfers=8',
+    '--rclone-args=--checkers=16',
+    '--delete',
+    '--progress',
+    ...rcloneFlags,
+  ];
+}
+
+// Mirrors for the same reason.
+export function buildFilesystemSyncArgs(direction: 'sync-to', installPath: string): string[] {
+  return ['repository', direction, 'filesystem', '--path', installPath, '--delete', '--progress'];
+}
+
 export interface CloudSyncStatus {
   /** Active cloud provider (currently only `gdrive` is implemented). */
   provider: CloudSyncProvider;
@@ -759,30 +788,17 @@ class CloudSyncService {
     passwordOverride: string | undefined,
     target: Extract<SyncTarget, { kind: 'rclone' }>
   ): Promise<void> {
-    const args = [
-      'repository',
-      direction,
-      'rclone',
-      '--remote-path',
-      remotePath,
-      '--rclone-exe',
-      config.rcloneBinaryPath,
-      '--rclone-startup-timeout=120s',
-      `--rclone-args=--config=${config.rcloneConfigPath}`,
-      '--rclone-args=--transfers=8',
-      '--rclone-args=--checkers=16',
-      '--progress',
-      ...target.rcloneFlags(),
-    ];
-    return this.execKopiaSync(args, passwordOverride);
+    return this.execKopiaSync(
+      buildRcloneSyncArgs(direction, remotePath, target.rcloneFlags()),
+      passwordOverride
+    );
   }
 
   private async runKopiaSyncFilesystem(direction: 'sync-to', installPath: string): Promise<void> {
     // Ensure the parent dir exists — kopia's filesystem target writes to it
     // without auto-creating intermediate parents.
     await mkdir(installPath, { recursive: true });
-    const args = ['repository', direction, 'filesystem', '--path', installPath, '--progress'];
-    return this.execKopiaSync(args, undefined);
+    return this.execKopiaSync(buildFilesystemSyncArgs(direction, installPath), undefined);
   }
 
   private execKopiaSync(args: string[], passwordOverride: string | undefined): Promise<void> {
