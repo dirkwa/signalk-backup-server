@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.1](https://github.com/dirkwa/signalk-backup-server/compare/v1.0.0...v1.0.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* **cloud:** mirror retention to the destination ([abd31a6](https://github.com/dirkwa/signalk-backup-server/commit/abd31a648fcc6ab8d847c172a84d51aaa4141bf7))
+* **retention:** stop kopia pruning behind the app's back ([2e9f9bd](https://github.com/dirkwa/signalk-backup-server/commit/2e9f9bdaf71afa27b9130aaa65c4354323cb619b))
+
 ## [1.0.0](https://github.com/dirkwa/signalk-backup-server/compare/v0.7.1...v1.0.0) (2026-08-16)
 
 
