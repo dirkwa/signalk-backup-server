@@ -196,6 +196,10 @@ const CLOUD_CONNECT_TIMEOUT_MS = 5 * 60 * 1000;
 
 const CONNECTIVITY_TIMEOUT_MS = 5000;
 
+const INTERNET_CHECK_RETRIES = 3;
+const INTERNET_CHECK_BASE_DELAY_MS = 2000;
+const INTERNET_CHECK_CACHE_TTL_MS = 60_000;
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const WEEK_MS = 7 * DAY_MS;
@@ -361,6 +365,10 @@ class CloudSyncService {
   private syncScheduleTimeout: NodeJS.Timeout | null = null;
   private scheduleGeneration = 0;
   private internetAvailable: boolean | null = null;
+  private internetCache: { value: boolean | null; timestamp: number } = {
+    value: null,
+    timestamp: 0,
+  };
   private syncProgress: SyncProgress | null = null;
 
   // Cloud restore state
@@ -373,6 +381,14 @@ class CloudSyncService {
     const bindings = getProviderBindings(settings.cloudSync);
     const authStatus = await bindings.authService.getStatus();
 
+    const now = Date.now();
+    const cacheExpired = now - this.internetCache.timestamp > INTERNET_CHECK_CACHE_TTL_MS;
+    const lastWasFalse = this.internetCache.value === false;
+    if (cacheExpired || lastWasFalse) {
+      this.internetCache.value = await this.checkInternet();
+      this.internetCache.timestamp = now;
+    }
+
     return {
       provider,
       connected: authStatus.connected,
@@ -382,7 +398,7 @@ class CloudSyncService {
       syncFrequency: settings.cloudSync?.syncFrequency ?? null,
       lastSync: settings.cloudSync?.lastSync ?? null,
       lastSyncError: settings.cloudSync?.lastSyncError ?? null,
-      internetAvailable: this.internetAvailable,
+      internetAvailable: this.internetCache.value,
       email: authStatus.email,
       syncProgress: this.syncProgress ?? undefined,
     };
@@ -952,28 +968,34 @@ class CloudSyncService {
   }
 
   private checkInternet(): Promise<boolean> {
-    return new Promise((resolve) => {
-      const socket: Socket = connect(
-        { host: 'www.googleapis.com', port: 443, timeout: CONNECTIVITY_TIMEOUT_MS },
-        () => {
+    const attempt = async (retry: number): Promise<boolean> => {
+      const result = await new Promise<boolean>((resolve) => {
+        const socket: Socket = connect(
+          { host: 'www.googleapis.com', port: 443, timeout: CONNECTIVITY_TIMEOUT_MS },
+          () => {
+            socket.destroy();
+            resolve(true);
+          }
+        );
+        socket.on('error', () => {
           socket.destroy();
-          this.internetAvailable = true;
-          resolve(true);
-        }
-      );
-
-      socket.on('error', () => {
-        socket.destroy();
-        this.internetAvailable = false;
-        resolve(false);
+          resolve(false);
+        });
+        socket.on('timeout', () => {
+          socket.destroy();
+          resolve(false);
+        });
       });
 
-      socket.on('timeout', () => {
-        socket.destroy();
-        this.internetAvailable = false;
-        resolve(false);
-      });
-    });
+      if (result) return true;
+      if (retry >= INTERNET_CHECK_RETRIES) return false;
+
+      const delay = INTERNET_CHECK_BASE_DELAY_MS * 2 ** (retry - 1);
+      await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      return attempt(retry + 1);
+    };
+
+    return attempt(1);
   }
 
   private async updateSyncStatus(
