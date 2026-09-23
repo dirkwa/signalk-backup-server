@@ -187,15 +187,7 @@ class BackupService {
         }
       }
 
-      // Set default retention policy (Kopia's built-in; we also enforce per-tag)
-      await kopiaClient.setPolicy(config.signalkDataPath, {
-        keepLatest: 100,
-        keepHourly: 0,
-        keepDaily: 0,
-        keepWeekly: 0,
-        keepMonthly: 0,
-        keepAnnual: 0,
-      });
+      await this.applyKopiaRetentionPolicy();
 
       this.initialized = true;
       logger.info('Backup service initialized with Kopia');
@@ -506,6 +498,18 @@ class BackupService {
       logger.error({ error, backupId: id }, 'Failed to delete backup');
       return false;
     }
+  }
+
+  // kopia prunes by count at snapshot-creation time and cannot see the type tags, so any ceiling here deletes manual backups the app promises to keep; enforceRetention is the only thing that may delete.
+  async applyKopiaRetentionPolicy(): Promise<void> {
+    await kopiaClient.setPolicy(config.signalkDataPath, {
+      keepLatest: 0,
+      keepHourly: 0,
+      keepDaily: 0,
+      keepWeekly: 0,
+      keepMonthly: 0,
+      keepAnnual: 0,
+    });
   }
 
   /**
