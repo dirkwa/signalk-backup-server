@@ -1,43 +1,96 @@
 name: release-please
 
 # Maintains a standing Release PR from the conventional commits on main
-# (version bump + changelog); merging that PR creates the vX.Y.Z tag and
-# the GitHub Release. Publishing stays in publish.yml — but a tag pushed
-# with GITHUB_TOKEN never triggers other workflows (GitHub's recursion
-# guard), so this workflow dispatches publish.yml explicitly:
-# workflow_dispatch is the documented exception to that guard. The
-# dispatch targets the tag ref, so the publish run builds the tagged
-# tree even if main has moved on.
+# (version bump + GitHub-generated release notes); merging that PR creates
+# the vX.Y.Z tag and the GitHub Release. Publishing stays in publish.yml.
 
 on:
   push:
     branches: [main]
+  # The gate below runs release-please only for a push that carries a commit
+  # users get, so a release pull request it has already opened is not
+  # refreshed by a docs or ci merge — and a config change is exactly such a
+  # merge. This trigger re-runs it on demand, which is what rewrites an
+  # outstanding release pull request against the current configuration.
+  workflow_dispatch:
 
-# Serialize runs: two rapid pushes must not race over the same Release PR.
+permissions: {}
+
+# One run at a time, keyed on a constant: the action is given no
+# target-branch, so every run — a dispatch from any ref included — acts on the
+# default branch's release pull request. Never cancelled, so a run creating a
+# tag or dispatching the publish always finishes.
 concurrency:
   group: release-please
   cancel-in-progress: false
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  actions: write
-
 jobs:
+  # GitHub's release notes are never empty, so release-please would propose
+  # a release after every merge, a docs or ci change included. Only a push
+  # carrying a change users get — or the merge of the release PR itself,
+  # which is what creates the tag — goes on to it. The subject is each
+  # message's first line; a breaking change counts whatever its type, a
+  # dependency bump when it is a runtime one (dependabot scopes those
+  # `deps`, dev ones `deps-dev`), and a revert because what it undoes has
+  # shipped. The payload holds at most 2048 commits, so a push that fills it
+  # may hide more and is let through.
+  gate:
+    runs-on: ubuntu-24.04
+    outputs:
+      releasable: ${{ steps.check.outputs.releasable }}
+    steps:
+      # A manual run carries no commits to judge, and asking for one is the
+      # statement that it should happen — so it bypasses the check below
+      # rather than being skipped by it for having an empty payload.
+      - id: check
+        env:
+          DISPATCHED: ${{ github.event_name == 'workflow_dispatch' }}
+          MESSAGES: ${{ toJSON(github.event.commits.*.message) }}
+          RELEASABLE: '^((feat|fix|perf|revert)(\([^)]*\))?!?: |[a-z]+(\([^)]*\))?!: |build\(deps\): |Revert |chore(\([^)]*\))?: release v?[0-9])'
+        run: |
+          if [ "$DISPATCHED" = true ]; then
+            echo "releasable=true" >> "$GITHUB_OUTPUT"
+            echo "Run requested manually; release-please not gated."
+            exit 0
+          fi
+          if jq -e --arg re "$RELEASABLE" '(length >= 2048) or ([.[] | (split("\n")[0] | test($re)) or test("\nBREAKING[- ]CHANGE: ") or test("\nRelease-As: "; "i")] | any)' <<< "$MESSAGES" > /dev/null; then
+            echo "releasable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "releasable=false" >> "$GITHUB_OUTPUT"
+            echo "No releasable commit in this push; release-please not run."
+          fi
+
   release-please:
-    runs-on: ubuntu-latest
+    needs: gate
+    if: ${{ needs.gate.outputs.releasable == 'true' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - id: release
         uses: googleapis/release-please-action@v5
-        with:
-          release-type: node
 
-      - name: Dispatch image publish for the new release
-        if: ${{ steps.release.outputs.release_created }}
-        env:
+  # A tag pushed with GITHUB_TOKEN never triggers other workflows (GitHub's
+  # recursion guard), so publish.yml is dispatched explicitly:
+  # workflow_dispatch is the documented exception. The dispatch targets the
+  # tag ref, so the publish run builds the tagged tree even if main has moved
+  # on. Its own job, so that the right to start workflows is held by nothing
+  # but this one command.
+  publish:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+    steps:
+      - env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag_name }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
         run: |
-          gh workflow run publish.yml --repo "${{ github.repository }}" \
+          gh workflow run publish.yml --repo "$GITHUB_REPOSITORY" \
             --ref "${TAG}" -f tag="${TAG#v}"
