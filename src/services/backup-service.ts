@@ -162,6 +162,7 @@ function snapshotToMetadata(snapshot: KopiaSnapshot): BackupMetadata {
 
 class BackupService {
   private initialized = false;
+  private retentionQueue: Promise<unknown> = Promise.resolve();
 
   /**
    * Initialize backup service - set up Kopia repository
@@ -512,10 +513,14 @@ class BackupService {
     });
   }
 
-  /**
-   * Enforce retention policy - delete old backups by type
-   */
+  // Hourly and daily backups both fire at midnight; run concurrently, both passes list the same expired snapshots and the loser fails to delete what the winner already removed.
   async enforceRetention(): Promise<CleanupResult> {
+    const run = this.retentionQueue.then(() => this.runRetention());
+    this.retentionQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  private async runRetention(): Promise<CleanupResult> {
     await this.ensureInitialized();
 
     // Per-user retention from settings, falling back to DEFAULT_RETENTION
