@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 import {
   buildFilesystemSyncArgs,
   buildRcloneSyncArgs,
+  GDRIVE_RCLONE_FLAGS,
   parseKopiaSyncProgress,
   type SyncProgress,
 } from '../../../src/services/cloud-sync-service.js';
@@ -144,6 +145,14 @@ describe('sync arguments', () => {
     ]);
 
     expect(args.at(-1)).toBe('--rclone-args=--drive-chunk-size=256k');
+    expect(args).toContain('--delete');
+  });
+
+  // Drive's trash still counts against quota, so a mirror that trashes frees nothing for 30 days.
+  it('deletes Drive blobs permanently instead of trashing them', () => {
+    const args = buildRcloneSyncArgs('sync-to', 'gdrive:x', [...GDRIVE_RCLONE_FLAGS]);
+
+    expect(args).toContain('--rclone-args=--drive-use-trash=false');
     expect(args).toContain('--delete');
   });
 });

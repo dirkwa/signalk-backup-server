@@ -134,9 +134,7 @@ function getProviderBindings(cloudSync: CloudSyncSettings | undefined): Provider
           requiresInternet: true,
           installsRoot: `${RCLONE_GDRIVE_REMOTE_NAME}:SignalK-Backups`,
           remotePath: (folderId) => `${RCLONE_GDRIVE_REMOTE_NAME}:SignalK-Backups/${folderId}`,
-          // Drive performs better with smaller chunks for high-latency
-          // round-trips. SMB/local won't want this.
-          rcloneFlags: () => ['--rclone-args=--drive-chunk-size=256k'],
+          rcloneFlags: () => [...GDRIVE_RCLONE_FLAGS],
         },
       };
     case 'local': {
@@ -201,6 +199,12 @@ const CONNECTIVITY_TIMEOUT_MS = 5000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const WEEK_MS = 7 * DAY_MS;
+
+// Drive prefers small chunks on high-latency links. rclone trashes deletes on Drive by default, and trashed blobs keep eating quota for 30 days, so the mirror must delete for real.
+export const GDRIVE_RCLONE_FLAGS: readonly string[] = [
+  '--rclone-args=--drive-chunk-size=256k',
+  '--rclone-args=--drive-use-trash=false',
+];
 
 export interface SyncProgress {
   /** Total size of local kopia repo in bytes */
