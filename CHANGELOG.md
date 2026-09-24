@@ -1,5 +1,7 @@
 # Changelog
 
+From 1.0.2 on, release notes live in [GitHub Releases](https://github.com/dirkwa/signalk-backup-server/releases).
+
 ## [1.0.1](https://github.com/dirkwa/signalk-backup-server/compare/v1.0.0...v1.0.1) (2026-09-23)
 
 
