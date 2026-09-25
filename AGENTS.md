@@ -127,6 +127,7 @@ curl http://127.0.0.1:3010/api/openapi.json | jq .
 - **Branch names use hyphens, not slashes.** Signal K maintainers' convention.
 - **TypeScript is strict.** Don't add `as any` to silence errors — fix the type.
 - **One logical change per PR.** Refactors, behavior changes, dep bumps belong in separate PRs. The `chore(release): X.Y.Z` commit is its own PR.
+- **Update a branch by rebasing onto `main`, never by merging `main` into it.** Push the result with `git push --force-with-lease --force-if-includes`. A merge commit from `main` is not a conventional commit and buries the change under unrelated history — on a fork's pull request as much as on our own branches.
 - **PR descriptions:** `## Summary` (bullets, why-not-what) and `## Tested` (only what was actually verified — no speculative test plans, no checkbox lists).
 - **The image must build for `linux/amd64` AND `linux/arm64`.** Pi 5 is the primary target. The Dockerfile uses `$TARGETARCH` for both kopia and rclone downloads — keep that.
 - **Don't write multi-line comment blocks or docstrings.** A short single-line comment for a non-obvious WHY is fine; everything else is noise.
