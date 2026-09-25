@@ -134,9 +134,7 @@ function getProviderBindings(cloudSync: CloudSyncSettings | undefined): Provider
           requiresInternet: true,
           installsRoot: `${RCLONE_GDRIVE_REMOTE_NAME}:SignalK-Backups`,
           remotePath: (folderId) => `${RCLONE_GDRIVE_REMOTE_NAME}:SignalK-Backups/${folderId}`,
-          // Drive performs better with smaller chunks for high-latency
-          // round-trips. SMB/local won't want this.
-          rcloneFlags: () => ['--rclone-args=--drive-chunk-size=256k'],
+          rcloneFlags: () => [...GDRIVE_RCLONE_FLAGS],
         },
       };
     case 'local': {
@@ -205,6 +203,21 @@ const INTERNET_CHECK_CACHE_TTL_MS = 60_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const WEEK_MS = 7 * DAY_MS;
+
+// Drive prefers small chunks on high-latency links. rclone trashes deletes on Drive by default, and trashed blobs keep eating quota for 30 days, so the mirror must delete for real.
+export const GDRIVE_RCLONE_FLAGS: readonly string[] = [
+  '--rclone-args=--drive-chunk-size=256k',
+  '--rclone-args=--drive-use-trash=false',
+];
+
+const SYNC_RETRY_MS = 60 * 60 * 1000;
+
+// Counted from the last sync, not from startup: a timer that restarts with the process never fires on a box that restarts more often than the interval.
+export function msUntilNextSync(lastSync: string | null, intervalMs: number, now: number): number {
+  const lastSyncTime = lastSync ? new Date(lastSync).getTime() : 0;
+  if (Number.isNaN(lastSyncTime)) return 0;
+  return Math.max(0, lastSyncTime + intervalMs - now);
+}
 
 export interface SyncProgress {
   /** Total size of local kopia repo in bytes */
@@ -349,7 +362,8 @@ class CloudSyncService {
   // SIGTERM. Lets the close-handler distinguish "Sync cancelled by user" from
   // any other source of SIGTERM (container shutdown, external `kill`, OOM).
   private syncCancelRequested = false;
-  private syncScheduleInterval: NodeJS.Timeout | null = null;
+  private syncScheduleTimeout: NodeJS.Timeout | null = null;
+  private scheduleGeneration = 0;
   private internetAvailable: boolean | null = null;
   private internetCache: { value: boolean | null; timestamp: number } = {
     value: null,
@@ -687,9 +701,10 @@ class CloudSyncService {
   }
 
   stopSchedule(): void {
-    if (this.syncScheduleInterval) {
-      clearInterval(this.syncScheduleInterval);
-      this.syncScheduleInterval = null;
+    this.scheduleGeneration++;
+    if (this.syncScheduleTimeout) {
+      clearTimeout(this.syncScheduleTimeout);
+      this.syncScheduleTimeout = null;
     }
   }
 
@@ -1005,31 +1020,50 @@ class CloudSyncService {
     }
 
     const intervalMs = cloudSync.syncFrequency === 'weekly' ? WEEK_MS : DAY_MS;
-
-    // Check if a sync is already overdue (e.g. after container restart)
-    const lastSyncTime = cloudSync.lastSync ? new Date(cloudSync.lastSync).getTime() : 0;
-    const elapsed = Date.now() - lastSyncTime;
-    const overdue = elapsed >= intervalMs;
+    const delayMs = msUntilNextSync(cloudSync.lastSync, intervalMs, Date.now());
 
     logger.info(
-      { frequency: cloudSync.syncFrequency, intervalMs, overdue, lastSync: cloudSync.lastSync },
+      { frequency: cloudSync.syncFrequency, intervalMs, delayMs, lastSync: cloudSync.lastSync },
       'Starting cloud sync schedule'
     );
 
-    // If overdue (or never synced), sync immediately
-    if (overdue) {
-      this.syncToCloud().catch((error) => {
-        logger.warn({ error }, 'Scheduled cloud sync failed (catch-up)');
-      });
+    this.scheduleNextSync(intervalMs, delayMs);
+  }
+
+  private scheduleNextSync(intervalMs: number, delayMs: number): void {
+    const generation = this.scheduleGeneration;
+    this.syncScheduleTimeout = setTimeout(() => {
+      this.syncScheduleTimeout = null;
+      void this.runScheduledSync(intervalMs, generation);
+    }, delayMs);
+  }
+
+  // One-shot and re-read each time: a manual sync or one that outlasts the interval moves the next run instead of colliding with it.
+  private async runScheduledSync(intervalMs: number, generation: number): Promise<void> {
+    const readLastSync = async (): Promise<string | null> =>
+      (await settingsService.get()).cloudSync?.lastSync ?? null;
+
+    try {
+      const lastSync = await readLastSync();
+      if (generation !== this.scheduleGeneration) return;
+      if (msUntilNextSync(lastSync, intervalMs, Date.now()) === 0) {
+        await this.syncToCloud();
+      }
+    } catch (error) {
+      logger.warn({ error }, 'Scheduled cloud sync failed');
     }
 
-    this.syncScheduleInterval = setInterval(async () => {
-      try {
-        await this.syncToCloud();
-      } catch (error) {
-        logger.warn({ error }, 'Scheduled cloud sync failed');
-      }
-    }, intervalMs);
+    if (generation !== this.scheduleGeneration) return;
+
+    let delayMs = SYNC_RETRY_MS;
+    try {
+      delayMs = msUntilNextSync(await readLastSync(), intervalMs, Date.now()) || SYNC_RETRY_MS;
+    } catch (error) {
+      logger.warn({ error }, 'Failed to read last cloud sync time; retrying later');
+    }
+    if (generation === this.scheduleGeneration) {
+      this.scheduleNextSync(intervalMs, delayMs);
+    }
   }
 }
 

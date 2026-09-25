@@ -3,6 +3,8 @@ import { describe, it, expect } from 'vitest';
 import {
   buildFilesystemSyncArgs,
   buildRcloneSyncArgs,
+  GDRIVE_RCLONE_FLAGS,
+  msUntilNextSync,
   parseKopiaSyncProgress,
   type SyncProgress,
 } from '../../../src/services/cloud-sync-service.js';
@@ -145,5 +147,38 @@ describe('sync arguments', () => {
 
     expect(args.at(-1)).toBe('--rclone-args=--drive-chunk-size=256k');
     expect(args).toContain('--delete');
+  });
+
+  // Drive's trash still counts against quota, so a mirror that trashes frees nothing for 30 days.
+  it('deletes Drive blobs permanently instead of trashing them', () => {
+    const args = buildRcloneSyncArgs('sync-to', 'gdrive:x', [...GDRIVE_RCLONE_FLAGS]);
+
+    expect(args).toContain('--rclone-args=--drive-use-trash=false');
+    expect(args).toContain('--delete');
+  });
+});
+
+describe('msUntilNextSync', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const lastSync = '2026-09-23T03:21:26.000Z';
+  const last = Date.parse(lastSync);
+
+  // A restart 14.5h after a daily sync must not push the next one out to 38.5h.
+  it('counts from the last sync rather than from startup', () => {
+    const restartedAt = last + 14.5 * 60 * 60 * 1000;
+
+    expect(msUntilNextSync(lastSync, DAY, restartedAt)).toBe(9.5 * 60 * 60 * 1000);
+  });
+
+  it('syncs immediately when overdue', () => {
+    expect(msUntilNextSync(lastSync, DAY, last + DAY + 1)).toBe(0);
+  });
+
+  it('syncs immediately when there has never been a sync', () => {
+    expect(msUntilNextSync(null, DAY, last)).toBe(0);
+  });
+
+  it('syncs immediately when lastSync is unparseable', () => {
+    expect(msUntilNextSync('not-a-date', DAY, last)).toBe(0);
   });
 });
