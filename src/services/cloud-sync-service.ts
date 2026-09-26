@@ -196,7 +196,7 @@ const CLOUD_CONNECT_TIMEOUT_MS = 5 * 60 * 1000;
 
 const CONNECTIVITY_TIMEOUT_MS = 5000;
 
-const INTERNET_CHECK_RETRIES = 3;
+const INTERNET_CHECK_TOTAL_ATTEMPTS = 3;
 const INTERNET_CHECK_BASE_DELAY_MS = 2000;
 const INTERNET_CHECK_CACHE_TTL_MS = 60_000;
 
@@ -365,10 +365,8 @@ class CloudSyncService {
   private syncScheduleTimeout: NodeJS.Timeout | null = null;
   private scheduleGeneration = 0;
   private internetAvailable: boolean | null = null;
-  private internetCache: { value: boolean | null; timestamp: number } = {
-    value: null,
-    timestamp: 0,
-  };
+  private internetCheckedAt: number | null = null;
+  private internetCheckInFlight: Promise<boolean> | null = null;
   private syncProgress: SyncProgress | null = null;
 
   // Cloud restore state
@@ -381,12 +379,14 @@ class CloudSyncService {
     const bindings = getProviderBindings(settings.cloudSync);
     const authStatus = await bindings.authService.getStatus();
 
-    const now = Date.now();
-    const cacheExpired = now - this.internetCache.timestamp > INTERNET_CHECK_CACHE_TTL_MS;
-    const lastWasFalse = this.internetCache.value === false;
-    if (cacheExpired || lastWasFalse) {
-      this.internetCache.value = await this.checkInternet();
-      this.internetCache.timestamp = now;
+    const cacheExpired =
+      this.internetCheckedAt === null ||
+      Date.now() - this.internetCheckedAt >= INTERNET_CHECK_CACHE_TTL_MS;
+    const lastWasFalse = this.internetAvailable === false;
+    const requiresInternet =
+      bindings.syncTarget.kind === 'rclone' && bindings.syncTarget.requiresInternet;
+    if (requiresInternet && (cacheExpired || lastWasFalse)) {
+      void this.refreshInternetAvailability().catch(() => undefined);
     }
 
     return {
@@ -398,7 +398,7 @@ class CloudSyncService {
       syncFrequency: settings.cloudSync?.syncFrequency ?? null,
       lastSync: settings.cloudSync?.lastSync ?? null,
       lastSyncError: settings.cloudSync?.lastSyncError ?? null,
-      internetAvailable: this.internetCache.value,
+      internetAvailable: this.internetAvailable,
       email: authStatus.email,
       syncProgress: this.syncProgress ?? undefined,
     };
@@ -427,7 +427,7 @@ class CloudSyncService {
       // targets (gdrive). LAN-local rclone (smb) and pure-filesystem
       // (local) work fine offline.
       if (bindings.syncTarget.kind === 'rclone' && bindings.syncTarget.requiresInternet) {
-        const online = await this.checkInternet();
+        const online = await this.refreshInternetAvailability();
         if (!online) {
           const error = 'No internet connection available';
           await this.updateSyncStatus(null, error);
@@ -492,7 +492,7 @@ class CloudSyncService {
     }
 
     if (bindings.syncTarget.kind === 'rclone' && bindings.syncTarget.requiresInternet) {
-      const online = await this.checkInternet();
+      const online = await this.refreshInternetAvailability();
       if (!online) {
         throw new Error('No internet connection available');
       }
@@ -967,6 +967,29 @@ class CloudSyncService {
     return total;
   }
 
+  private refreshInternetAvailability(): Promise<boolean> {
+    if (this.internetCheckInFlight) {
+      return this.internetCheckInFlight;
+    }
+
+    const check: Promise<boolean> = this.checkInternet()
+      .then((available) => {
+        if (this.internetCheckInFlight === check) {
+          this.internetAvailable = available;
+          this.internetCheckedAt = Date.now();
+        }
+        return available;
+      })
+      .finally(() => {
+        if (this.internetCheckInFlight === check) {
+          this.internetCheckInFlight = null;
+        }
+      });
+
+    this.internetCheckInFlight = check;
+    return check;
+  }
+
   private checkInternet(): Promise<boolean> {
     const attempt = async (retry: number): Promise<boolean> => {
       const result = await new Promise<boolean>((resolve) => {
@@ -988,7 +1011,7 @@ class CloudSyncService {
       });
 
       if (result) return true;
-      if (retry >= INTERNET_CHECK_RETRIES) return false;
+      if (retry >= INTERNET_CHECK_TOTAL_ATTEMPTS) return false;
 
       const delay = INTERNET_CHECK_BASE_DELAY_MS * 2 ** (retry - 1);
       await new Promise<void>((resolve) => setTimeout(resolve, delay));
