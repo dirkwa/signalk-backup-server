@@ -366,11 +366,13 @@ class BackupService {
       // Build description
       const description = request.description ?? `${type} backup`;
 
-      // Build .kopiaignore from architectural defaults + DB plugin defaults
-      // + user-configured exclusions + per-backup flags. Order matters only
-      // for diagnostic clarity — kopia treats the file as a flat list.
+      // Build .kopiaignore from DB plugin defaults + user-configured
+      // exclusions + architectural defaults + per-backup flags. A later
+      // `!pattern` re-includes what an earlier line excluded, so the user's
+      // rules can bring back a DB directory, and ALWAYS_EXCLUDED comes last
+      // so no user rule can bring back our own repository.
       const exclusions = await this.getExclusions();
-      const ignoreLines = [...ALWAYS_EXCLUDED, ...DB_PLUGIN_DEFAULT_EXCLUSIONS, ...exclusions];
+      const ignoreLines = [...DB_PLUGIN_DEFAULT_EXCLUSIONS, ...exclusions, ...ALWAYS_EXCLUDED];
 
       // Per-backup flags can override user exclusions
       if (includePlugins) {
