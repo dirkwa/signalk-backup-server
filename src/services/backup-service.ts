@@ -88,6 +88,19 @@ const DB_PLUGIN_DEFAULT_EXCLUSIONS = [
   'plugin-config-data/signalk-history*/',
 ];
 
+/**
+ * Caches that plugins rebuild on demand. Backing them up costs snapshot
+ * space and cloud upload for nothing; signalk-charts-provider-simple's
+ * raster tile cache alone can reach 1 GiB and is keyed by chart file
+ * mtime, so a restored copy is stale anyway. The plugins' settings next
+ * to these directories are still backed up.
+ */
+const PLUGIN_CACHE_EXCLUSIONS = [
+  'plugin-config-data/signalk-charts-provider-simple/raster-tile-cache/',
+  'plugin-config-data/signalk-charts-provider-simple/catalog-cache/',
+  'plugin-config-data/signalk-charts-provider-simple/noaa-enc-cache/',
+];
+
 const CA_FILES = ['ca-cert.pem', 'ca-key.pem'];
 
 // An empty/absent dir is safe to `repository create`; non-empty means a repo we must connect to, never create over.
@@ -366,13 +379,19 @@ class BackupService {
       // Build description
       const description = request.description ?? `${type} backup`;
 
-      // Build .kopiaignore from DB plugin defaults + user-configured
-      // exclusions + architectural defaults + per-backup flags. A later
-      // `!pattern` re-includes what an earlier line excluded, so the user's
-      // rules can bring back a DB directory, and ALWAYS_EXCLUDED comes last
-      // so no user rule can bring back our own repository.
+      // Build .kopiaignore from DB plugin defaults + plugin caches +
+      // user-configured exclusions + architectural defaults + per-backup
+      // flags. A later `!pattern` re-includes what an earlier line excluded,
+      // so the user's rules can bring back a DB directory or cache, and
+      // ALWAYS_EXCLUDED comes last so no user rule can bring back our own
+      // repository.
       const exclusions = await this.getExclusions();
-      const ignoreLines = [...DB_PLUGIN_DEFAULT_EXCLUSIONS, ...exclusions, ...ALWAYS_EXCLUDED];
+      const ignoreLines = [
+        ...DB_PLUGIN_DEFAULT_EXCLUSIONS,
+        ...PLUGIN_CACHE_EXCLUSIONS,
+        ...exclusions,
+        ...ALWAYS_EXCLUDED,
+      ];
 
       // Per-backup flags can override user exclusions
       if (includePlugins) {
