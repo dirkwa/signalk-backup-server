@@ -1438,6 +1438,47 @@ api.get(
 );
 
 /**
+ * GET /api/backups/cache-candidates
+ * Plugin subdirectories that look like caches, for the webapp to suggest excluding.
+ */
+api.get(
+  '/cache-candidates',
+  {
+    summary: 'Suggest plugin directories to exclude as caches',
+    description:
+      'Returns subdirectories one level inside each plugin data directory that backups still include, are at least 100 MiB, and had at least half of their bytes written in the last 24 hours. Each hourly snapshot stores a new copy of what changed, so such a directory is likely a cache. Directories already excluded, or holding a CACHEDIR.TAG, are left out.',
+    responses: {
+      200: {
+        description: 'Candidate directories with size and bytes written in the last 24 hours',
+      },
+      500: { description: 'Failed to scan plugin data directories' },
+    },
+  },
+  async (_req: Request, res: Response) => {
+    try {
+      const candidates = await backupService.getCacheCandidates();
+      const response: ApiResponse<typeof candidates> = {
+        success: true,
+        data: candidates,
+        timestamp: new Date().toISOString(),
+      };
+      res.json(response);
+    } catch (error) {
+      logger.error({ error }, 'Failed to scan for cache candidates');
+      const response: ApiResponse<null> = {
+        success: false,
+        error: {
+          code: 'CACHE_CANDIDATES_ERROR',
+          message: (error as Error).message,
+        },
+        timestamp: new Date().toISOString(),
+      };
+      res.status(500).json(response);
+    }
+  }
+);
+
+/**
  * GET /api/backups/exclusions
  * Get the current backup exclusion patterns.
  */

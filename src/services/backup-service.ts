@@ -1,5 +1,5 @@
 import { createReadStream, createWriteStream, existsSync, readdirSync } from 'fs';
-import { mkdir, rm, readdir, stat, writeFile, copyFile } from 'fs/promises';
+import { mkdir, rm, readdir, stat, writeFile, copyFile, open } from 'fs/promises';
 import { join, dirname, basename } from 'path';
 import { ZipArchive } from 'archiver';
 import { Extract } from 'unzip-stream';
@@ -114,6 +114,28 @@ const PLUGIN_CACHE_EXCLUSIONS = [
 ];
 
 const CA_FILES = ['ca-cert.pem', 'ca-key.pem'];
+
+// A plugin subdirectory this big, mostly written within the window, is suggested as a cache to exclude.
+const CACHE_CANDIDATE_MIN_BYTES = 100 * 1024 * 1024;
+const CACHE_CANDIDATE_MIN_RECENT_SHARE = 0.5;
+const CACHE_CANDIDATE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+const CACHEDIR_TAG_SIGNATURE = 'Signature: 8a477f597d28d172789f06886806bc55';
+
+// Kopia's default policy skips the contents of a directory whose CACHEDIR.TAG starts with the signature (https://bford.info/cachedir/).
+async function hasCacheDirTag(dirPath: string): Promise<boolean> {
+  let handle;
+  try {
+    handle = await open(join(dirPath, 'CACHEDIR.TAG'), 'r');
+    const buf = Buffer.alloc(CACHEDIR_TAG_SIGNATURE.length);
+    const { bytesRead } = await handle.read(buf, 0, buf.length, 0);
+    return buf.subarray(0, bytesRead).toString('latin1') === CACHEDIR_TAG_SIGNATURE;
+  } catch {
+    return false;
+  } finally {
+    await handle?.close();
+  }
+}
 
 // An empty/absent dir is safe to `repository create`; non-empty means a repo we must connect to, never create over.
 export function hasRepositoryData(repoPath: string): boolean {
@@ -1080,6 +1102,86 @@ class BackupService {
       })
     );
     return results.sort((a, b) => b.size - a.size);
+  }
+
+  // Each hourly snapshot stores a new copy of what changed, so a big directory rewritten daily is likely a cache; a busy log churns too, so these are only suggestions.
+  async getCacheCandidates(): Promise<Array<{ path: string; size: number; recentBytes: number }>> {
+    const pluginDataPath = join(config.signalkDataPath, 'plugin-config-data');
+    if (!existsSync(pluginDataPath)) return [];
+    const lines = [
+      ...DB_PLUGIN_DEFAULT_EXCLUSIONS,
+      ...PLUGIN_CACHE_EXCLUSIONS,
+      ...(await this.getExclusions()),
+      ...ALWAYS_EXCLUDED,
+    ];
+    const since = Date.now() - CACHE_CANDIDATE_WINDOW_MS;
+    const candidates: Array<{ path: string; size: number; recentBytes: number }> = [];
+
+    for (const plugin of await readdir(pluginDataPath, { withFileTypes: true })) {
+      if (!plugin.isDirectory()) continue;
+      const pluginRel = `plugin-config-data/${plugin.name}`;
+      if (isIgnoredDir(pluginRel, lines)) continue;
+      let children;
+      try {
+        children = await readdir(join(pluginDataPath, plugin.name), { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const child of children) {
+        if (!child.isDirectory()) continue;
+        const rel = `${pluginRel}/${child.name}`;
+        const stats = await this.backedUpStats(
+          join(config.signalkDataPath, rel),
+          rel,
+          lines,
+          since
+        );
+        if (
+          stats &&
+          stats.size >= CACHE_CANDIDATE_MIN_BYTES &&
+          stats.recentBytes >= stats.size * CACHE_CANDIDATE_MIN_RECENT_SHARE
+        ) {
+          candidates.push({ path: `${rel}/`, ...stats });
+        }
+      }
+    }
+    return candidates.sort((a, b) => b.recentBytes - a.recentBytes);
+  }
+
+  // Null when a snapshot skips the directory: an ignore line matches it, or it holds a cache tag.
+  private async backedUpStats(
+    dirPath: string,
+    rel: string,
+    lines: readonly string[],
+    since: number
+  ): Promise<{ size: number; recentBytes: number } | null> {
+    if (isIgnoredDir(rel, lines) || (await hasCacheDirTag(dirPath))) return null;
+    const stats = { size: 0, recentBytes: 0 };
+    let entries;
+    try {
+      entries = await readdir(dirPath, { withFileTypes: true });
+    } catch {
+      return stats;
+    }
+    for (const entry of entries) {
+      const fullPath = join(dirPath, entry.name);
+      if (entry.isFile()) {
+        try {
+          const s = await stat(fullPath);
+          stats.size += s.size;
+          if (s.mtimeMs >= since) stats.recentBytes += s.size;
+        } catch {
+          // Removed since readdir
+        }
+      } else if (entry.isDirectory()) {
+        const sub = await this.backedUpStats(fullPath, `${rel}/${entry.name}`, lines, since);
+        if (sub) {
+          stats.size += sub.size;
+          stats.recentBytes += sub.recentBytes;
+        }
+      }
+    }
+    return stats;
   }
 
   private lockedReasonForPluginDir(name: string): string | null {
