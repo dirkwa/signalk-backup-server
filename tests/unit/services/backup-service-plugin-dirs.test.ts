@@ -24,7 +24,12 @@ vi.mock('../../../src/services/logger.js', () => ({
 vi.mock('../../../src/services/settings-service.js', () => ({
   settingsService: {
     get: vi.fn(async () => ({
-      backupExclusions: ['plugin-config-data/tracks/', 'plugin-config-data/kip*/'],
+      backupExclusions: [
+        'plugin-config-data/tracks/',
+        'plugin-config-data/[z-a]/',
+        'plugin-config-data/a[b/',
+        'plugin-config-data/kip*/',
+      ],
     })),
     getSetting: vi.fn(async () => false),
   },
@@ -43,7 +48,7 @@ describe('getPluginDataDirectories', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('marks the plugin directories the user excluded, and the locked ones', async () => {
+  it('marks the plugin directories the user excluded, and the locked ones, past malformed lines', async () => {
     for (const name of ['tracks', 'kip', 'tides', 'signalk-questdb']) {
       mkdirSync(join(root, 'plugin-config-data', name), { recursive: true });
       writeFileSync(join(root, 'plugin-config-data', name, 'f'), 'x');

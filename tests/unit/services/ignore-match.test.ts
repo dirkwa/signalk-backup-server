@@ -70,7 +70,34 @@ describe('isIgnoredDir', () => {
     expect(isIgnoredDir('plugin-config-data/crowd-depth', ['plugin-config-data/[!kt]*/'])).toBe(
       true
     );
-    expect(isIgnoredDir('a[b', ['a[b/'])).toBe(true);
+  });
+
+  it('reads sets as kopia does: only ! negates, \\ escapes, and a reversed range matches nothing', () => {
+    const dir = (name: string, line: string): boolean =>
+      isIgnoredDir(`plugin-config-data/${name}`, [line]);
+    expect(dir('a', 'plugin-config-data/[z-a]/')).toBe(false);
+    expect(dir('a', 'plugin-config-data/[a-cz-a]/')).toBe(true);
+    expect(dir('m', 'plugin-config-data/[!z-a]/')).toBe(true);
+    expect(dir('^', 'plugin-config-data/[^a]/')).toBe(true);
+    expect(dir('m', 'plugin-config-data/[^a]/')).toBe(false);
+    expect(dir('a', 'plugin-config-data/[]/')).toBe(false);
+    expect(dir('7', 'plugin-config-data/[!]/')).toBe(true);
+    expect(dir('-', 'plugin-config-data/[a-]/')).toBe(true);
+    expect(dir('a', 'plugin-config-data/[a\\]]/')).toBe(true);
+    expect(dir('[x', 'plugin-config-data/\\[x/')).toBe(true);
+    expect(dir('[x', 'plugin-config-data/[[]x/')).toBe(true);
+    expect(dir('x*y', 'plugin-config-data/x\\*y/')).toBe(true);
+    expect(dir('xzy', 'plugin-config-data/x\\*y/')).toBe(false);
+    expect(dir('a]', 'plugin-config-data/[[:alpha:]]/')).toBe(true);
+    expect(dir('a', 'plugin-config-data/[[:alpha:]]/')).toBe(false);
+  });
+
+  it('skips a line kopia rejects, and the other lines still apply', () => {
+    for (const bad of ['plugin-config-data/a[b/', 'plugin-config-data/k*\\/']) {
+      expect(isIgnoredDir('plugin-config-data/a[b', [bad])).toBe(false);
+      expect(isIgnoredDir('plugin-config-data/kip', [bad])).toBe(false);
+      expect(isIgnoredDir('plugin-config-data/kip', [bad, 'plugin-config-data/kip/'])).toBe(true);
+    }
   });
 
   it('anchors a line with a leading slash', () => {

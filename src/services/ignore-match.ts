@@ -31,10 +31,11 @@ function parseLine(line: string): Rule | null {
   if (body === '') return null;
   // A slash before the end anchors the line at the snapshot root; without one it matches the name at any depth.
   const anchored = body.includes('/');
-  const parts: Part[] = body
+  const parts: (Part | null)[] = body
     .replace(/^\//, '')
     .split('/')
-    .map((p) => (p === GLOBSTAR ? GLOBSTAR : segmentRegex(p)));
+    .map((p) => (/^\*{2,}$/.test(p) ? GLOBSTAR : segmentRegex(p)));
+  if (!parts.every((p): p is Part => p !== null)) return null;
   if (anchored) return { negated, matches: (segments) => matchParts(parts, segments) };
   const [name] = parts;
   if (!(name instanceof RegExp)) return { negated, matches: () => true };
@@ -56,20 +57,52 @@ function matchParts(parts: readonly Part[], segments: readonly string[]): boolea
   return from(0, 0);
 }
 
-// `*` and `?` stay within one segment; `[...]` is a character class, `[!...]` its complement.
-function segmentRegex(glob: string): RegExp {
+// One segment in kopia's wildcard syntax. Null where kopia rejects the line (a trailing `\`, an unclosed `[`), because kopia then fails every snapshot instead of matching.
+function segmentRegex(glob: string): RegExp | null {
+  const chars = [...glob];
+  let pos = 0;
+  const read = (): string | undefined => chars[pos++];
+  const unescape = (c: string | undefined): string | undefined => (c === '\\' ? read() : c);
   let source = '';
-  for (let i = 0; i < glob.length; i++) {
-    const c = glob.charAt(i);
-    if (c === '*') source += '[^/]*';
+  for (let c = read(); c !== undefined; c = read()) {
+    // Contiguous stars are one star, as in kopia.
+    if (c === '*') source += source.endsWith('[^/]*') ? '' : '[^/]*';
     else if (c === '?') source += '[^/]';
-    else if (c === '[' && glob.indexOf(']', i + 2) !== -1) {
-      const end = glob.indexOf(']', i + 2);
-      let body = glob.slice(i + 1, end);
-      if (body.startsWith('!')) body = `^${body.slice(1)}`;
-      source += `[${body.replace(/\\/g, '\\\\')}]`;
-      i = end;
-    } else source += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    else if (c === '[') {
+      // Only `!` negates; `[]` matches nothing and `[!]` any one character. Kopia 0.23 applies `[:digit:]` and the like only in a set within the first few characters of a line, so here they are plain characters.
+      let ch = read();
+      const negated = ch === '!';
+      if (negated) ch = read();
+      let members = '';
+      for (; ch !== undefined && ch !== ']'; ch = read()) {
+        const lo = unescape(ch);
+        if (lo === undefined) return null;
+        if (chars[pos] === '-' && chars[pos + 1] !== undefined && chars[pos + 1] !== ']') {
+          read();
+          const hi = unescape(read());
+          if (hi === undefined) return null;
+          // A reversed range matches nothing.
+          if ((lo.codePointAt(0) ?? 0) <= (hi.codePointAt(0) ?? 0)) {
+            members += `${escapeInSet(lo)}-${escapeInSet(hi)}`;
+          }
+        } else members += escapeInSet(lo);
+      }
+      if (ch === undefined) return null;
+      if (members === '') source += negated ? '[^/]' : '(?!)';
+      else source += negated ? `[^/${members}]` : `[${members}]`;
+    } else {
+      const literal = unescape(c);
+      if (literal === undefined) return null;
+      source += escapeRegex(literal);
+    }
   }
-  return new RegExp(`^${source}$`);
+  return new RegExp(`^${source}$`, 'u');
+}
+
+function escapeRegex(ch: string): string {
+  return /[\^$\\.*+?()[\]{}|/]/.test(ch) ? `\\${ch}` : ch;
+}
+
+function escapeInSet(ch: string): string {
+  return ch === '-' ? '\\-' : escapeRegex(ch);
 }
