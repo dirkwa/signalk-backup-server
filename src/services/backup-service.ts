@@ -1121,31 +1121,44 @@ class BackupService {
       if (!plugin.isDirectory()) continue;
       const pluginRel = `plugin-config-data/${plugin.name}`;
       if (isIgnoredDir(pluginRel, lines)) continue;
-      let children;
-      try {
-        children = await readdir(join(pluginDataPath, plugin.name), { withFileTypes: true });
-      } catch {
-        continue;
-      }
-      for (const child of children) {
-        if (!child.isDirectory()) continue;
-        const rel = `${pluginRel}/${child.name}`;
-        const stats = await this.backedUpStats(
-          join(config.signalkDataPath, rel),
-          rel,
-          lines,
-          since
-        );
-        if (
-          stats &&
-          stats.size >= CACHE_CANDIDATE_MIN_BYTES &&
-          stats.recentBytes >= stats.size * CACHE_CANDIDATE_MIN_RECENT_SHARE
-        ) {
-          candidates.push({ path: `${rel}/`, ...stats });
-        }
-      }
+      candidates.push(...(await this.cacheCandidatesIn(pluginRel, lines, since)));
     }
     return candidates.sort((a, b) => b.recentBytes - a.recentBytes);
+  }
+
+  private async cacheCandidatesIn(
+    dataRel: string,
+    lines: readonly string[],
+    since: number
+  ): Promise<Array<{ path: string; size: number; recentBytes: number }>> {
+    let children;
+    try {
+      children = await readdir(join(config.signalkDataPath, dataRel), { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    const found: Array<{ path: string; size: number; recentBytes: number }> = [];
+    for (const child of children) {
+      if (!child.isDirectory()) continue;
+      const rel = `${dataRel}/${child.name}`;
+      const dirPath = join(config.signalkDataPath, rel);
+      // A WASM plugin's data directory is vfs/, the root of its virtual filesystem; suggesting all of it would drop the plugin's own data too.
+      if (child.name === 'vfs' && dirname(dataRel) === 'plugin-config-data') {
+        if (!isIgnoredDir(rel, lines) && !(await hasCacheDirTag(dirPath))) {
+          found.push(...(await this.cacheCandidatesIn(rel, lines, since)));
+        }
+        continue;
+      }
+      const stats = await this.backedUpStats(dirPath, rel, lines, since);
+      if (
+        stats &&
+        stats.size >= CACHE_CANDIDATE_MIN_BYTES &&
+        stats.recentBytes >= stats.size * CACHE_CANDIDATE_MIN_RECENT_SHARE
+      ) {
+        found.push({ path: `${rel}/`, ...stats });
+      }
+    }
+    return found;
   }
 
   // Null when a snapshot skips the directory: an ignore line matches it, or it holds a cache tag.

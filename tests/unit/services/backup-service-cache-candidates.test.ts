@@ -89,6 +89,13 @@ describe('getCacheCandidates', () => {
     file('router/badtag/new.bin', 150 * MB);
     writeFileSync(join(root, 'plugin-config-data/router/badtag/CACHEDIR.TAG'), 'not a tag');
     file('router/settings.json', 150 * MB);
+    file('wasm/vfs/data/forecast/new.bin', 130 * MB);
+    file('wasm/vfs/config/own.json', 1);
+    file('taggedwasm/vfs/data/new.bin', 150 * MB);
+    writeFileSync(
+      join(root, 'plugin-config-data/taggedwasm/vfs/CACHEDIR.TAG'),
+      'Signature: 8a477f597d28d172789f06886806bc55'
+    );
     file('excluded/cache-like/new.bin', 150 * MB);
     file('signalk-questdb/db/new.bin', 150 * MB);
 
@@ -97,6 +104,7 @@ describe('getCacheCandidates', () => {
     expect(candidates.map((c) => c.path)).toEqual([
       'plugin-config-data/router/badtag/',
       'plugin-config-data/router/forecast/',
+      'plugin-config-data/wasm/vfs/data/',
       'plugin-config-data/router/ecmwf/',
     ]);
     expect(candidates[1]).toEqual({
@@ -104,6 +112,6 @@ describe('getCacheCandidates', () => {
       size: 150 * MB + 1,
       recentBytes: 150 * MB + 1,
     });
-    expect(candidates[2]).toMatchObject({ size: 220 * MB, recentBytes: 120 * MB });
+    expect(candidates[3]).toMatchObject({ size: 220 * MB, recentBytes: 120 * MB });
   });
 });
