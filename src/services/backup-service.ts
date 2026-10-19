@@ -89,24 +89,27 @@ const DB_PLUGIN_DEFAULT_EXCLUSIONS = [
 ];
 
 /**
- * Caches and scratch space that plugins rebuild on demand, matched by
- * name one level inside each plugin's data directory. Backing them up
- * costs snapshot space and cloud upload for nothing;
- * signalk-charts-provider-simple's raster-tile-cache alone can reach
- * 1 GiB and is keyed by chart file mtime, so a restored copy is stale
- * anyway. The plugins' settings next to these directories are still
- * backed up. Caches named otherwise carry a CACHEDIR.TAG, which kopia's
- * default policy honours.
+ * Caches that plugins rebuild on demand. Backing them up costs snapshot
+ * space and cloud upload for nothing; signalk-charts-provider-simple's
+ * raster tile cache alone can reach 1 GiB and is keyed by chart file
+ * mtime, so a restored copy is stale anyway. The plugins' settings next
+ * to these directories are still backed up.
  */
 const PLUGIN_CACHE_EXCLUSIONS = [
+  // Matched by name one level inside each plugin's data directory; caches named otherwise carry a CACHEDIR.TAG.
   'plugin-config-data/*/cache/',
   'plugin-config-data/*/.cache/',
   'plugin-config-data/*/*-cache/',
   'plugin-config-data/*/tmp/',
   'plugin-config-data/*/.tmp/',
   'plugin-config-data/*/temp/',
-  // A WASM plugin's /tmp, inside the virtual filesystem the server keeps in its data directory.
+  // A WASM plugin's data directory is vfs/, the root of the virtual filesystem the server keeps for it.
+  'plugin-config-data/*/vfs/cache/',
+  'plugin-config-data/*/vfs/.cache/',
+  'plugin-config-data/*/vfs/*-cache/',
   'plugin-config-data/*/vfs/tmp/',
+  'plugin-config-data/*/vfs/.tmp/',
+  'plugin-config-data/*/vfs/temp/',
 ];
 
 const CA_FILES = ['ca-cert.pem', 'ca-key.pem'];

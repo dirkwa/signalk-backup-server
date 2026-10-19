@@ -63,7 +63,12 @@ describe('createBackup .kopiaignore', () => {
         'plugin-config-data/*/tmp/',
         'plugin-config-data/*/.tmp/',
         'plugin-config-data/*/temp/',
+        'plugin-config-data/*/vfs/cache/',
+        'plugin-config-data/*/vfs/.cache/',
+        'plugin-config-data/*/vfs/*-cache/',
         'plugin-config-data/*/vfs/tmp/',
+        'plugin-config-data/*/vfs/.tmp/',
+        'plugin-config-data/*/vfs/temp/',
         'logs/',
       ])
     );
