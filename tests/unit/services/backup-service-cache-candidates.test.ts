@@ -5,6 +5,7 @@ import {
   mkdirSync,
   openSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'fs';
@@ -92,6 +93,19 @@ describe('getCacheCandidates', () => {
     file('wasm/vfs/data/forecast/new.bin', 130 * MB);
     file('wasm/vfs/config/own.json', 1);
     file('taggedwasm/vfs/data/new.bin', 150 * MB);
+    file('taggedroot/forecast/new.bin', 150 * MB);
+    writeFileSync(
+      join(root, 'plugin-config-data/taggedroot/CACHEDIR.TAG'),
+      'Signature: 8a477f597d28d172789f06886806bc55'
+    );
+    // Symlinks are stored as links, so what they point at is not in a snapshot.
+    file('../outside/big.bin', 150 * MB);
+    mkdirSync(join(root, 'plugin-config-data/linker/data'), { recursive: true });
+    symlinkSync(join(root, 'outside'), join(root, 'plugin-config-data/linker/cache-like'));
+    symlinkSync(
+      join(root, 'outside/big.bin'),
+      join(root, 'plugin-config-data/linker/data/big-link.bin')
+    );
     writeFileSync(
       join(root, 'plugin-config-data/taggedwasm/vfs/CACHEDIR.TAG'),
       'Signature: 8a477f597d28d172789f06886806bc55'

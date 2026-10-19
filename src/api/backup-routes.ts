@@ -1446,10 +1446,11 @@ api.get(
   {
     summary: 'Suggest plugin directories to exclude as caches',
     description:
-      'Returns subdirectories one level inside each plugin data directory that backups still include, are at least 100 MiB, and had at least half of their bytes written in the last 24 hours. Each hourly snapshot stores a new copy of what changed, so such a directory is likely a cache. Directories already excluded, or holding a CACHEDIR.TAG, are left out.',
+      'Returns subdirectories one level inside each plugin data directory that backups still include, are at least 100 MiB, and have at least half of their bytes in files modified in the last 24 hours. Each hourly snapshot stores a new copy of what changed, so such a directory may be a cache. A file counts in full once modified, so an appended log or database can show up too. Directories already excluded, holding a CACHEDIR.TAG, or inside a tagged plugin directory are left out.',
     responses: {
       200: {
-        description: 'Candidate directories with size and bytes written in the last 24 hours',
+        description:
+          'Candidate directories with their size and the bytes in files modified in the last 24 hours',
       },
       500: { description: 'Failed to scan plugin data directories' },
     },
