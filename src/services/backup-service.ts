@@ -105,6 +105,8 @@ const PLUGIN_CACHE_EXCLUSIONS = [
   'plugin-config-data/*/tmp/',
   'plugin-config-data/*/.tmp/',
   'plugin-config-data/*/temp/',
+  // A WASM plugin's /tmp, inside the virtual filesystem the server keeps in its data directory.
+  'plugin-config-data/*/vfs/tmp/',
 ];
 
 const CA_FILES = ['ca-cert.pem', 'ca-key.pem'];

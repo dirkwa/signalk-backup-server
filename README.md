@@ -19,7 +19,7 @@ The rules live in [backup-service.ts](src/services/backup-service.ts).
 
 - Our own state: the kopia repository and its config.
 - Live database files of the database plugins, because a filesystem snapshot of a running database can be inconsistent. Database history is in backups only when the signalk-backup plugin's database export is turned on (it is off by default): the export writes consistent copies into a staging directory that snapshots include. A restore brings those export files back; it does not load them into the database.
-- Plugin caches and scratch space, one level inside each plugin's data directory: `cache/`, `.cache/`, `*-cache/`, `tmp/`, `.tmp/`, `temp/`. These names are a contract with plugin authors.
+- Plugin caches and scratch space, one level inside each plugin's data directory: `cache/`, `.cache/`, `*-cache/`, `tmp/`, `.tmp/`, `temp/`, and a WASM plugin's `/tmp` (`vfs/tmp/`). These names are a contract with plugin authors.
 - Any directory holding a [`CACHEDIR.TAG`](https://bford.info/cachedir/): kopia's default policy keeps the directory but skips its contents.
 - Whatever the user excludes in the webapp. A user line starting with `!` re-includes a cache directory.
 
