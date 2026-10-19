@@ -1470,7 +1470,7 @@ api.put(
   {
     summary: 'Update backup exclusions',
     description:
-      'Sets the list of directory patterns to exclude from backups. Patterns are relative to the SignalK data directory.',
+      'Sets the list of directory patterns to exclude from backups. Patterns are relative to the SignalK data directory. Existing backups are kept and still hold what they backed up; the next backup applies the new list.',
     responses: {
       200: { description: 'Exclusions updated' },
       400: { description: 'Invalid request body' },
