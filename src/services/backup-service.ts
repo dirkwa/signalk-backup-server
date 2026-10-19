@@ -9,6 +9,7 @@ import { logger } from './logger.js';
 import { versionService } from './version-service.js';
 import { kopiaClient, type KopiaSnapshot } from './kopia-client.js';
 import { settingsService } from './settings-service.js';
+import { isIgnoredDir } from './ignore-match.js';
 // keeper used historyBackupService here; in signalk-backup history is
 // deferred to v2 (no InfluxDB/Grafana access from inside the plugin).
 import type {
@@ -1072,6 +1073,7 @@ class BackupService {
   > {
     const pluginDataPath = join(config.signalkDataPath, 'plugin-config-data');
     if (!existsSync(pluginDataPath)) return [];
+    const exclusions = await this.getExclusions();
 
     const entries = await readdir(pluginDataPath, { withFileTypes: true });
     const dirs = entries.filter((e) => e.isDirectory() && !e.name.startsWith('.'));
@@ -1084,7 +1086,8 @@ class BackupService {
         return {
           name: dir.name,
           size,
-          excluded: lockInfo !== null,
+          // The webapp seeds each checkbox from this flag and rebuilds the list from the checkboxes on Save.
+          excluded: lockInfo !== null || isIgnoredDir(`plugin-config-data/${dir.name}`, exclusions),
           lockedExcluded: lockInfo !== null,
           lockReason: lockInfo ?? undefined,
         };
