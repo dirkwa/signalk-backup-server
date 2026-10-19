@@ -961,11 +961,7 @@ class BackupService {
     return settings.backupExclusions ?? [...DEFAULT_BACKUP_EXCLUSIONS];
   }
 
-  /**
-   * Update the list of excluded directory patterns.
-   * Deletes all existing snapshots and runs maintenance to reclaim space,
-   * since old snapshots still contain data from previously-included directories.
-   */
+  // Existing snapshots are kept with the newly excluded data; tier retention prunes the scheduled ones, and manual, pre-update and pre-restore ones stay until deleted.
   async setExclusions(exclusions: string[]): Promise<void> {
     // Normalize: ensure trailing slash for directories
     const normalized = exclusions.map((e) => (e.endsWith('/') ? e : `${e}/`));
@@ -983,32 +979,6 @@ class BackupService {
       { exclusions: dirExclusions, includeHistory: !historyExcluded },
       'Backup exclusions updated'
     );
-
-    // Delete all existing snapshots — they contain data based on old exclusions
-    try {
-      const snapshots = await this.listBackups();
-      if (snapshots.length > 0) {
-        logger.info(
-          { count: snapshots.length },
-          'Deleting existing snapshots after exclusion change'
-        );
-        for (const snapshot of snapshots) {
-          await kopiaClient.deleteSnapshot(snapshot.id);
-        }
-        await kopiaClient.maintenanceRun(true);
-        logger.info('Forced maintenance completed after exclusion change');
-      }
-    } catch (error) {
-      logger.warn({ error }, 'Failed to clean up snapshots after exclusion change');
-    }
-
-    // Create a fresh backup with the new exclusions so the user isn't left with zero backups
-    try {
-      await this.createBackup({ type: 'manual', description: 'After exclusion change' });
-      logger.info('Created fresh backup after exclusion change');
-    } catch (error) {
-      logger.warn({ error }, 'Failed to create backup after exclusion change');
-    }
   }
 
   /**
