@@ -32,6 +32,7 @@ import {
   type KopiaLsEntry,
 } from '../services/kopia-client.js';
 import { isAnyRestoreActive } from '../services/restore-lock.js';
+import { unreadableIgnoreLines } from '../services/ignore-match.js';
 import { backupEvents } from '../services/backup-events.js';
 import { logger } from '../services/logger.js';
 import { createApiRouter } from './openapi-registry.js';
@@ -1473,7 +1474,7 @@ api.put(
       'Sets the list of directory patterns to exclude from backups. Patterns are relative to the SignalK data directory. Existing backups are kept and still hold what they backed up; the next backup applies the new list.',
     responses: {
       200: { description: 'Exclusions updated' },
-      400: { description: 'Invalid request body' },
+      400: { description: 'Invalid request body, or a pattern kopia cannot read' },
     },
   },
   async (req: Request, res: Response) => {
@@ -1485,6 +1486,20 @@ api.put(
         error: {
           code: 'INVALID_REQUEST',
           message: 'exclusions must be an array of strings',
+        },
+        timestamp: new Date().toISOString(),
+      };
+      res.status(400).json(response);
+      return;
+    }
+
+    const unreadable = unreadableIgnoreLines(exclusions);
+    if (unreadable.length > 0) {
+      const response: ApiResponse<null> = {
+        success: false,
+        error: {
+          code: 'INVALID_EXCLUSIONS',
+          message: `kopia cannot read these patterns, and would fail every backup: ${unreadable.join(', ')}`,
         },
         timestamp: new Date().toISOString(),
       };
