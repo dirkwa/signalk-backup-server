@@ -8,6 +8,7 @@
 
 import { type Request, type Response } from 'express';
 import { settingsService, type BackupServerSettings } from '../services/settings-service.js';
+import { unreadableIgnoreLines } from '../services/ignore-match.js';
 import type { ApiResponse } from '../types/index.js';
 import { createApiRouter } from './openapi-registry.js';
 
@@ -70,7 +71,7 @@ api.put(
     description: 'Update one or more backup-server settings. Only known setting keys are accepted.',
     responses: {
       200: { description: 'Settings updated successfully' },
-      400: { description: 'Invalid or unknown settings keys' },
+      400: { description: 'Invalid or unknown settings keys, or an exclusion kopia cannot read' },
       500: { description: 'Internal server error' },
     },
   },
@@ -88,6 +89,22 @@ api.put(
           error: {
             code: 'INVALID_SETTINGS',
             message: `Unknown or read-only settings: ${invalidKeys.join(', ')}`,
+          },
+          timestamp: new Date().toISOString(),
+        };
+        res.status(400).json(response);
+        return;
+      }
+
+      const unreadable = Array.isArray(updates.backupExclusions)
+        ? unreadableIgnoreLines(updates.backupExclusions)
+        : [];
+      if (unreadable.length > 0) {
+        const response: ApiResponse<null> = {
+          success: false,
+          error: {
+            code: 'INVALID_EXCLUSIONS',
+            message: `kopia cannot read these patterns, and would fail every backup: ${unreadable.join(', ')}`,
           },
           timestamp: new Date().toISOString(),
         };

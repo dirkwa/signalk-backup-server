@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { isIgnoredDir } from '../../../src/services/ignore-match.js';
+import { isIgnoredDir, unreadableIgnoreLines } from '../../../src/services/ignore-match.js';
 
 describe('isIgnoredDir', () => {
   it('anchors a line with an inner slash at the root, with * inside one segment', () => {
@@ -102,5 +102,23 @@ describe('isIgnoredDir', () => {
 
   it('anchors a line with a leading slash', () => {
     expect(isIgnoredDir('plugin-config-data/kip', ['/plugin-config-data/kip/'])).toBe(true);
+  });
+});
+
+describe('unreadableIgnoreLines', () => {
+  it('returns the lines kopia rejects: a trailing backslash or an unclosed set', () => {
+    expect(
+      unreadableIgnoreLines([
+        'logs/',
+        '',
+        '# a[b',
+        '!',
+        'plugin-config-data/[z-a]/',
+        'plugin-config-data/\\[x/',
+        'plugin-config-data/a[b/',
+        '!plugin-config-data/k*\\/',
+        'foo\\',
+      ])
+    ).toEqual(['plugin-config-data/a[b/', '!plugin-config-data/k*\\/', 'foo\\']);
   });
 });
