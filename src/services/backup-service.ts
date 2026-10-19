@@ -89,16 +89,22 @@ const DB_PLUGIN_DEFAULT_EXCLUSIONS = [
 ];
 
 /**
- * Caches that plugins rebuild on demand. Backing them up costs snapshot
- * space and cloud upload for nothing; signalk-charts-provider-simple's
- * raster tile cache alone can reach 1 GiB and is keyed by chart file
- * mtime, so a restored copy is stale anyway. The plugins' settings next
- * to these directories are still backed up.
+ * Caches and scratch space that plugins rebuild on demand, matched by
+ * name one level inside each plugin's data directory. Backing them up
+ * costs snapshot space and cloud upload for nothing;
+ * signalk-charts-provider-simple's raster-tile-cache alone can reach
+ * 1 GiB and is keyed by chart file mtime, so a restored copy is stale
+ * anyway. The plugins' settings next to these directories are still
+ * backed up. Caches named otherwise carry a CACHEDIR.TAG, which kopia's
+ * default policy honours.
  */
 const PLUGIN_CACHE_EXCLUSIONS = [
-  'plugin-config-data/signalk-charts-provider-simple/raster-tile-cache/',
-  'plugin-config-data/signalk-charts-provider-simple/catalog-cache/',
-  'plugin-config-data/signalk-charts-provider-simple/noaa-enc-cache/',
+  'plugin-config-data/*/cache/',
+  'plugin-config-data/*/.cache/',
+  'plugin-config-data/*/*-cache/',
+  'plugin-config-data/*/tmp/',
+  'plugin-config-data/*/.tmp/',
+  'plugin-config-data/*/temp/',
 ];
 
 const CA_FILES = ['ca-cert.pem', 'ca-key.pem'];
