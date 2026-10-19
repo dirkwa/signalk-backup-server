@@ -13,6 +13,26 @@ You normally don't run this container directly — install the [signalk-backup](
 - **Selective restore** — browse any snapshot's file tree, download a single file or whole subdirectory, or restore one sub-path in-place under signalkDataPath. The plugin's host-side writer handles restores to arbitrary host paths outside the container's view. See the API table below for the routes.
 - **Expose** an Express HTTP API (default port 3010). Headless — the user-facing UI is the [signalk-backup](https://github.com/dirkwa/signalk-backup) plugin's webapp, mounted into SignalK at `/signalk-backup/`
 
+## What is left out of backups
+
+The lists live in [backup-service.ts](src/services/backup-service.ts) (`ALWAYS_EXCLUDED`, `DB_PLUGIN_DEFAULT_EXCLUSIONS`, `PLUGIN_CACHE_EXCLUSIONS`, `DEFAULT_BACKUP_EXCLUSIONS`).
+
+- Our own state: the kopia repository and its config.
+- Live database files of the database plugins. A filesystem snapshot of a running database can be inconsistent; the plugin's database export covers history instead.
+- Plugin caches and scratch space, one level inside each plugin's data directory: `cache/`, `.cache/`, `*-cache/`, `tmp/`, `.tmp/`, `temp/`. These names are a contract with plugin authors.
+- Any directory holding a [`CACHEDIR.TAG`](https://bford.info/cachedir/): kopia's default policy keeps the directory but skips its contents.
+- Whatever the user excludes in the webapp. A user line starting with `!` re-includes a cache directory.
+
+### For plugin authors
+
+Put regenerable data (downloads, decoded or rendered files, tiles) in a subdirectory of `app.getDataDirPath()`. Either give it one of the cache names above, or write a `CACHEDIR.TAG` file into it whose first line is exactly:
+
+```
+Signature: 8a477f597d28d172789f06886806bc55
+```
+
+The tag works with every backup tool that knows the convention: kopia by default, and restic, Borg and GNU tar with `--exclude-caches`. Without it, a cache rewritten every few hours goes into every hourly snapshot, and the boat's cloud quota pays for each copy.
+
 ## Image
 
 `ghcr.io/dirkwa/signalk-backup-server` (multi-arch: linux/amd64, linux/arm64).

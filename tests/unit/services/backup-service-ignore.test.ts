@@ -42,6 +42,7 @@ vi.mock('../../../src/services/kopia-client.js', () => ({
 
 import { writeFile } from 'fs/promises';
 import { backupService } from '../../../src/services/backup-service.js';
+import { settingsService } from '../../../src/services/settings-service.js';
 
 describe('createBackup .kopiaignore', () => {
   beforeEach(() => {
@@ -49,19 +50,34 @@ describe('createBackup .kopiaignore', () => {
     vi.spyOn(backupService, 'initialize').mockResolvedValue();
   });
 
-  it('excludes chart provider caches alongside the user exclusions', async () => {
+  it('excludes plugin cache and temp directories alongside the user exclusions', async () => {
     await backupService.createBackup();
 
     expect(writeFile).toHaveBeenCalledWith('/signalk-data/.kopiaignore', expect.any(String));
     const lines = String(vi.mocked(writeFile).mock.calls[0][1]).split('\n');
     expect(lines).toEqual(
       expect.arrayContaining([
-        'plugin-config-data/signalk-charts-provider-simple/raster-tile-cache/',
-        'plugin-config-data/signalk-charts-provider-simple/catalog-cache/',
-        'plugin-config-data/signalk-charts-provider-simple/noaa-enc-cache/',
+        'plugin-config-data/*/cache/',
+        'plugin-config-data/*/.cache/',
+        'plugin-config-data/*/*-cache/',
+        'plugin-config-data/*/tmp/',
+        'plugin-config-data/*/.tmp/',
+        'plugin-config-data/*/temp/',
         'logs/',
       ])
     );
     expect(lines).not.toContain('plugin-config-data/signalk-charts-provider-simple/');
+  });
+
+  it('writes user lines after the cache defaults, so a ! line can re-include a cache', async () => {
+    vi.mocked(settingsService.get).mockResolvedValueOnce({
+      backupExclusions: ['!plugin-config-data/tides/harmonics-cache/'],
+    } as Awaited<ReturnType<typeof settingsService.get>>);
+    await backupService.createBackup();
+
+    const lines = String(vi.mocked(writeFile).mock.calls[0][1]).split('\n');
+    expect(lines.indexOf('!plugin-config-data/tides/harmonics-cache/')).toBeGreaterThan(
+      lines.indexOf('plugin-config-data/*/*-cache/')
+    );
   });
 });
