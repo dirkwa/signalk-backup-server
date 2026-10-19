@@ -32,8 +32,10 @@ jobs:
   # message's first line; a breaking change counts whatever its type, a
   # dependency bump when it is a runtime one (dependabot scopes those
   # `deps`, dev ones `deps-dev`), and a revert because what it undoes has
-  # shipped. The payload holds at most 2048 commits, so a push that fills it
-  # may hide more and is let through.
+  # shipped. The release PR's own title is pull-request-title-pattern in
+  # release-please-config.json. The payload holds at most 2048 commits, so a
+  # push that fills it may hide more and is let through, as is a push that
+  # carries none, such as a branch created at main, which has nothing to judge.
   gate:
     runs-on: ubuntu-24.04
     outputs:
@@ -53,7 +55,7 @@ jobs:
             echo "Run requested manually; release-please not gated."
             exit 0
           fi
-          if jq -e --arg re "$RELEASABLE" '(length >= 2048) or ([.[] | (split("\n")[0] | test($re)) or test("\nBREAKING[- ]CHANGE: ") or test("\nRelease-As: "; "i")] | any)' <<< "$MESSAGES" > /dev/null; then
+          if jq -e --arg re "$RELEASABLE" '(length == 0) or (length >= 2048) or ([.[] | (split("\n")[0] | test($re)) or test("\nBREAKING[- ]CHANGE: ") or test("\nRelease-As: "; "i")] | any)' <<< "$MESSAGES" > /dev/null; then
             echo "releasable=true" >> "$GITHUB_OUTPUT"
           else
             echo "releasable=false" >> "$GITHUB_OUTPUT"
@@ -92,5 +94,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.release-please.outputs.tag_name }}
         run: |
-          gh workflow run publish.yml --repo "$GITHUB_REPOSITORY" \
-            --ref "${TAG}" -f tag="${TAG#v}"
+          gh workflow run publish.yml --repo "$GITHUB_REPOSITORY" --ref "${TAG}"
