@@ -15,10 +15,10 @@ You normally don't run this container directly — install the [signalk-backup](
 
 ## What is left out of backups
 
-The lists live in [backup-service.ts](src/services/backup-service.ts) (`ALWAYS_EXCLUDED`, `DB_PLUGIN_DEFAULT_EXCLUSIONS`, `PLUGIN_CACHE_EXCLUSIONS`, `DEFAULT_BACKUP_EXCLUSIONS`).
+The rules live in [backup-service.ts](src/services/backup-service.ts).
 
 - Our own state: the kopia repository and its config.
-- Live database files of the database plugins. A filesystem snapshot of a running database can be inconsistent; the plugin's database export covers history instead.
+- Live database files of the database plugins, because a filesystem snapshot of a running database can be inconsistent. Database history is in backups only when the signalk-backup plugin's database export is turned on (it is off by default): the export writes consistent copies into a staging directory that snapshots include. A restore brings those export files back; it does not load them into the database.
 - Plugin caches and scratch space, one level inside each plugin's data directory: `cache/`, `.cache/`, `*-cache/`, `tmp/`, `.tmp/`, `temp/`. These names are a contract with plugin authors.
 - Any directory holding a [`CACHEDIR.TAG`](https://bford.info/cachedir/): kopia's default policy keeps the directory but skips its contents.
 - Whatever the user excludes in the webapp. A user line starting with `!` re-includes a cache directory.
