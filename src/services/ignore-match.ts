@@ -22,7 +22,15 @@ export function isIgnoredDir(relPath: string, lines: readonly string[]): boolean
   return false;
 }
 
-function parseLine(line: string): Rule | null {
+// A line kopia rejects fails the whole snapshot when it is in .kopiaignore.
+export function unreadableIgnoreLines(lines: readonly string[]): string[] {
+  return lines.filter((line) => splitLine(line)?.parts.includes(null) ?? false);
+}
+
+// Null for a blank or comment line; a null part is a segment kopia rejects.
+function splitLine(
+  line: string
+): { negated: boolean; anchored: boolean; parts: (Part | null)[] } | null {
   let body = line.trim();
   if (body === '' || body.startsWith('#')) return null;
   const negated = body.startsWith('!');
@@ -31,10 +39,17 @@ function parseLine(line: string): Rule | null {
   if (body === '') return null;
   // A slash before the end anchors the line at the snapshot root; without one it matches the name at any depth.
   const anchored = body.includes('/');
-  const parts: (Part | null)[] = body
+  const parts = body
     .replace(/^\//, '')
     .split('/')
     .map((p) => (/^\*{2,}$/.test(p) ? GLOBSTAR : segmentRegex(p)));
+  return { negated, anchored, parts };
+}
+
+function parseLine(line: string): Rule | null {
+  const split = splitLine(line);
+  if (split === null) return null;
+  const { negated, anchored, parts } = split;
   if (!parts.every((p): p is Part => p !== null)) return null;
   if (anchored) return { negated, matches: (segments) => matchParts(parts, segments) };
   const [name] = parts;
