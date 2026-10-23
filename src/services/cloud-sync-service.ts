@@ -380,6 +380,8 @@ class CloudSyncService {
   private uplinkState: UplinkState = null;
   // A post-backup sync the link held back; it runs once the link clears.
   private afterBackupSyncPending = false;
+  private afterBackupRetryTimeout: NodeJS.Timeout | null = null;
+  private afterBackupHolds = 0;
   private syncProgress: SyncProgress | null = null;
 
   // Cloud restore state
@@ -428,16 +430,37 @@ class CloudSyncService {
       this.startSchedule().catch((error: unknown) => {
         logger.warn({ error }, 'Failed to restart the cloud sync schedule');
       });
-      if (this.afterBackupSyncPending) {
-        this.afterBackupSyncPending = false;
-        this.onBackupComplete().catch((error: unknown) => {
-          logger.warn({ error }, 'Held post-backup cloud sync failed');
-        });
-      }
+      if (this.afterBackupSyncPending) void this.runHeldAfterBackupSync();
     }
   }
 
-  // The reason an automatic sync must wait, or null when it may run. LAN and filesystem targets never wait.
+  // The held sync stays pending until it succeeds, so a failure once the link clears is retried rather than lost.
+  private async runHeldAfterBackupSync(): Promise<void> {
+    this.clearHeldAfterBackupSync();
+    let failed: boolean;
+    try {
+      failed = (await this.onBackupComplete()).result === 'failure';
+    } catch (error) {
+      logger.warn({ error }, 'Held post-backup cloud sync failed');
+      failed = true;
+    }
+    if (!failed) return;
+    this.afterBackupSyncPending = true;
+    this.afterBackupRetryTimeout = setTimeout(() => {
+      this.afterBackupRetryTimeout = null;
+      void this.runHeldAfterBackupSync();
+    }, SYNC_RETRY_MS);
+    this.afterBackupRetryTimeout.unref();
+  }
+
+  private clearHeldAfterBackupSync(): void {
+    if (this.afterBackupRetryTimeout) {
+      clearTimeout(this.afterBackupRetryTimeout);
+      this.afterBackupRetryTimeout = null;
+    }
+    this.afterBackupSyncPending = false;
+  }
+
   private automaticSyncHold(cloudSync: CloudSyncSettings | undefined): string | null {
     const { syncTarget } = getProviderBindings(cloudSync);
     if (syncTarget.kind !== 'rclone' || !syncTarget.requiresInternet) return null;
@@ -707,12 +730,16 @@ class CloudSyncService {
     const hold = this.automaticSyncHold(settings.cloudSync);
     if (hold) {
       logger.info({ provider, reason: hold }, 'Holding post-backup cloud sync');
+      this.afterBackupHolds++;
       this.afterBackupSyncPending = true;
       return { result: 'skipped', target: provider };
     }
 
+    const holdsBefore = this.afterBackupHolds;
     try {
       await this.syncToCloud();
+      // A backup held while this sync ran is not in it and still needs its own sync.
+      if (this.afterBackupHolds === holdsBefore) this.clearHeldAfterBackupSync();
       return { result: 'success', target: provider };
     } catch (error) {
       // Don't fail the backup if cloud sync fails

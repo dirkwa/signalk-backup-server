@@ -137,6 +137,45 @@ describe('automatic cloud sync and the internet link', () => {
     expect(sync).toHaveBeenCalledTimes(1);
   });
 
+  it('retries a held post-backup sync that fails once the link is online', async () => {
+    settingsState.cloudSync.syncMode = 'after_backup';
+    cloudSyncService.setUplinkState('metered');
+    await cloudSyncService.onBackupComplete();
+    sync.mockRejectedValueOnce(new Error('rclone failed'));
+
+    cloudSyncService.setUplinkState('online');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sync).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(HOUR);
+    expect(sync).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(2 * HOUR);
+    expect(sync).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a backup held during a running post-backup sync pending', async () => {
+    settingsState.cloudSync.syncMode = 'after_backup';
+    let finish: () => void = () => undefined;
+    sync.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        })
+    );
+    const running = cloudSyncService.onBackupComplete();
+    await vi.advanceTimersByTimeAsync(0);
+
+    cloudSyncService.setUplinkState('metered');
+    await cloudSyncService.onBackupComplete();
+    finish();
+    await running;
+
+    cloudSyncService.setUplinkState('online');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sync).toHaveBeenCalledTimes(2);
+  });
+
   it('reports the link state in the status', async () => {
     cloudSyncService.setUplinkState('offline');
 
