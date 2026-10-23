@@ -35,11 +35,13 @@ vi.mock('../../../src/services/kopia-client.js', () => ({
     connectRepository: vi.fn(),
     disconnectRepository: vi.fn(),
     changePassword: vi.fn(),
+    adoptMaintenanceOwner: vi.fn(),
+    setPolicy: vi.fn(),
   },
 }));
 
 vi.mock('../../../src/services/settings-service.js', () => ({
-  settingsService: {},
+  settingsService: { getKopiaPassword: vi.fn().mockResolvedValue('pw') },
 }));
 
 vi.mock('../../../src/services/version-service.js', () => ({
@@ -62,6 +64,7 @@ const mockedSetPassword = vi.mocked(kopiaClient.setPassword);
 const mockedIsConnected = vi.mocked(kopiaClient.isRepositoryConnected);
 const mockedConnect = vi.mocked(kopiaClient.connectRepository);
 const mockedChangePassword = vi.mocked(kopiaClient.changePassword);
+const mockedAdoptOwner = vi.mocked(kopiaClient.adoptMaintenanceOwner);
 const mockedReaddir = vi.mocked(readdir);
 const mockedCopyFile = vi.mocked(copyFile);
 const mockedRm = vi.mocked(rm);
@@ -200,5 +203,34 @@ describe('rekeyRepository', () => {
     await backupService.rekeyRepository('oldpw', 'newpw');
     expect(mockedChangePassword).not.toHaveBeenCalled();
     expect(mockedSetPassword).toHaveBeenCalledWith('newpw');
+  });
+});
+
+describe('initialize', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (backupService as unknown as { initialized: boolean }).initialized = false;
+    mockedExistsSync.mockReturnValue(true);
+    mockedReaddirSync.mockReturnValue(['kopia.repository.f'] as unknown as ReturnType<
+      typeof readdirSync
+    >);
+    mockedConnect.mockResolvedValue(undefined);
+    mockedAdoptOwner.mockResolvedValue(false);
+  });
+
+  it('re-aligns the client identity of an already connected repository', async () => {
+    mockedIsConnected.mockResolvedValue(true);
+
+    await backupService.initialize();
+    expect(mockedConnect).not.toHaveBeenCalled();
+    expect(mockedAdoptOwner).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the alignment to connectRepository when it has to connect', async () => {
+    mockedIsConnected.mockResolvedValue(false);
+
+    await backupService.initialize();
+    expect(mockedConnect).toHaveBeenCalledTimes(1);
+    expect(mockedAdoptOwner).not.toHaveBeenCalled();
   });
 });

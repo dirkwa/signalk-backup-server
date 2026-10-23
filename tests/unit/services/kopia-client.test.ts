@@ -91,6 +91,83 @@ describe('KopiaClient', () => {
     });
   });
 
+  describe('adoptMaintenanceOwner', () => {
+    // promisify(mock) resolves with the callback's first value, so reply with { stdout, stderr } like execFile.
+    function kopiaAnswers(answers: { owner?: string; client?: object; fail?: string }) {
+      const calls: string[][] = [];
+      mockedExecFile.mockImplementation((_cmd, args, _opts, cb) => {
+        const argv = [...((args as readonly string[] | undefined) ?? [])];
+        calls.push(argv);
+        const sub = argv.slice(0, 2).join(' ');
+        const reply = cb as unknown as (
+          err: Error | null,
+          out?: { stdout: string; stderr: string }
+        ) => void;
+        if (answers.fail === sub) reply(new Error('boom'));
+        else if (sub === 'maintenance info')
+          reply(null, { stdout: JSON.stringify({ owner: answers.owner }), stderr: '' });
+        else if (sub === 'repository status')
+          reply(null, { stdout: JSON.stringify({ clientOptions: answers.client }), stderr: '' });
+        else reply(null, { stdout: '', stderr: '' });
+        return {} as ReturnType<typeof execFile>;
+      });
+      return calls;
+    }
+    const setClientCalls = (calls: string[][]) => calls.filter((a) => a[1] === 'set-client');
+
+    it('takes the owner identity when the client differs', async () => {
+      const calls = kopiaAnswers({
+        owner: 'root@nav-host',
+        client: { username: 'root', hostname: 'a1b2c3d4e5f6' },
+      });
+
+      await expect(kopiaClient.adoptMaintenanceOwner()).resolves.toBe(true);
+      expect(setClientCalls(calls)).toEqual([
+        ['repository', 'set-client', '--username=root', '--hostname=nav-host'],
+      ]);
+    });
+
+    it('leaves a client that already is the owner alone', async () => {
+      const calls = kopiaAnswers({
+        owner: 'root@nav-host',
+        client: { username: 'root', hostname: 'nav-host' },
+      });
+
+      await expect(kopiaClient.adoptMaintenanceOwner()).resolves.toBe(false);
+      expect(setClientCalls(calls)).toEqual([]);
+    });
+
+    it('does nothing when the repository has no usable owner', async () => {
+      for (const owner of [undefined, '', 'root@', '@nav-host', 'nohost']) {
+        const calls = kopiaAnswers({ owner, client: { username: 'root', hostname: 'x' } });
+        await expect(kopiaClient.adoptMaintenanceOwner()).resolves.toBe(false);
+        expect(setClientCalls(calls)).toEqual([]);
+      }
+    });
+
+    it('reports false instead of throwing when kopia fails', async () => {
+      kopiaAnswers({ owner: 'root@nav-host', fail: 'maintenance info' });
+      await expect(kopiaClient.adoptMaintenanceOwner()).resolves.toBe(false);
+      kopiaAnswers({ owner: 'root@nav-host', client: { hostname: 'x' }, fail: 'repository set-client' });
+      await expect(kopiaClient.adoptMaintenanceOwner()).resolves.toBe(false);
+    });
+
+    it('runs after every connect, so a reconnect keeps the identity', async () => {
+      const calls = kopiaAnswers({
+        owner: 'root@nav-host',
+        client: { username: 'root', hostname: 'a1b2c3d4e5f6' },
+      });
+
+      await kopiaClient.connectRepository();
+      expect(calls.map((a) => a.slice(0, 2).join(' '))).toEqual([
+        'repository connect',
+        'maintenance info',
+        'repository status',
+        'repository set-client',
+      ]);
+    });
+  });
+
   describe('tag construction', () => {
     it('builds correct tags for snapshot creation', () => {
       // Test the tag format used by the backup service
