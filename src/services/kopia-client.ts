@@ -47,6 +47,7 @@ export interface KopiaRepoStatus {
   status: string;
   storage: string;
   readonly?: boolean;
+  clientOptions?: { username?: string; hostname?: string };
 }
 
 export interface KopiaContentStats {
@@ -177,6 +178,44 @@ class KopiaClient {
     await this.run(args, { timeout: SHORT_TIMEOUT_MS, json: false });
 
     logger.debug('Connected to Kopia repository');
+    await this.adoptMaintenanceOwner();
+  }
+
+  // connect takes the host from the container, a new id after every recreate; the owner keeps the user@host that snapshots and maintenance need.
+  async adoptMaintenanceOwner(): Promise<boolean> {
+    try {
+      const info = (await this.run(['maintenance', 'info'], { timeout: SHORT_TIMEOUT_MS })) as {
+        owner?: string;
+      };
+      const owner = info.owner?.trim() ?? '';
+      // The host cannot contain '@', so the last one splits user from host.
+      const at = owner.lastIndexOf('@');
+      if (at <= 0 || at === owner.length - 1) return false;
+      const username = owner.slice(0, at);
+      const hostname = owner.slice(at + 1);
+
+      const { clientOptions } = await this.getRepositoryStatus();
+      if (clientOptions?.username === username && clientOptions.hostname === hostname) {
+        return false;
+      }
+
+      await this.run(
+        ['repository', 'set-client', `--username=${username}`, `--hostname=${hostname}`],
+        { timeout: SHORT_TIMEOUT_MS, json: false }
+      );
+      logger.warn(
+        { from: `${clientOptions?.username ?? ''}@${clientOptions?.hostname ?? ''}`, to: owner },
+        'Kopia client identity adopted from the maintenance owner'
+      );
+      return true;
+    } catch (error) {
+      // Backups work under any identity; only maintenance depends on this, so never fail the caller.
+      logger.warn(
+        { error },
+        'Could not align the kopia client identity with the maintenance owner'
+      );
+      return false;
+    }
   }
 
   async isRepositoryConnected(): Promise<boolean> {

@@ -242,6 +242,9 @@ class BackupService {
           await kopiaClient.initRepository();
           logger.info('Created new Kopia repository');
         }
+      } else {
+        // connectRepository adopts the owner itself; this heals an identity that drifted on an earlier connect.
+        await kopiaClient.adoptMaintenanceOwner();
       }
 
       await this.applyKopiaRetentionPolicy();
