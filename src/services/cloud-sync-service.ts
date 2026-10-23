@@ -28,6 +28,7 @@ import {
 import { installIdentityService } from './install-identity-service.js';
 import { gdriveAuthService, RCLONE_GDRIVE_REMOTE_NAME } from './gdrive-auth-service.js';
 import { localFsService } from './local-fs-service.js';
+import type { UplinkState } from '../schemas/cloud.js';
 import { smbAuthService, RCLONE_SMB_REMOTE_NAME } from './smb-auth-service.js';
 import { kopiaClient } from './kopia-client.js';
 import type { CloudRestorePhase, CloudRestorePrepareResult } from '../types/backup.js';
@@ -212,6 +213,13 @@ export const GDRIVE_RCLONE_FLAGS: readonly string[] = [
 
 const SYNC_RETRY_MS = 60 * 60 * 1000;
 
+// Automatic syncs over the internet wait for a link that is not metered, behind a captive portal or down; one the user starts always runs.
+const AUTOMATIC_SYNC_BLOCKING_UPLINKS: ReadonlySet<UplinkState> = new Set([
+  'metered',
+  'captive',
+  'offline',
+]);
+
 // Counted from the last sync, not from startup: a timer that restarts with the process never fires on a box that restarts more often than the interval.
 export function msUntilNextSync(lastSync: string | null, intervalMs: number, now: number): number {
   const lastSyncTime = lastSync ? new Date(lastSync).getTime() : 0;
@@ -335,6 +343,8 @@ export interface CloudSyncStatus {
   lastSyncError: string | null;
   /** Whether internet is available */
   internetAvailable: boolean | null;
+  /** The boat's internet link as last reported by the plugin; null when unknown */
+  uplinkState: UplinkState;
   /** Human-readable label for the connected destination (gdrive email, etc). */
   email?: string;
   /** Progress info during active sync */
@@ -367,6 +377,9 @@ class CloudSyncService {
   private internetAvailable: boolean | null = null;
   private internetCheckedAt: number | null = null;
   private internetCheckInFlight: Promise<boolean> | null = null;
+  private uplinkState: UplinkState = null;
+  // A post-backup sync the link held back; it runs once the link clears.
+  private afterBackupSyncPending = false;
   private syncProgress: SyncProgress | null = null;
 
   // Cloud restore state
@@ -399,9 +412,38 @@ class CloudSyncService {
       lastSync: settings.cloudSync?.lastSync ?? null,
       lastSyncError: settings.cloudSync?.lastSyncError ?? null,
       internetAvailable: this.internetAvailable,
+      uplinkState: this.uplinkState,
       email: authStatus.email,
       syncProgress: this.syncProgress ?? undefined,
     };
+  }
+
+  setUplinkState(state: UplinkState): void {
+    if (state === this.uplinkState) return;
+    logger.info({ from: this.uplinkState, to: state }, 'Internet link state changed');
+    const wasHeld = AUTOMATIC_SYNC_BLOCKING_UPLINKS.has(this.uplinkState);
+    this.uplinkState = state;
+    // A scheduled sync held back by the link runs as soon as the link allows it, not at the next hourly retry.
+    if (wasHeld && !AUTOMATIC_SYNC_BLOCKING_UPLINKS.has(state)) {
+      this.startSchedule().catch((error: unknown) => {
+        logger.warn({ error }, 'Failed to restart the cloud sync schedule');
+      });
+      if (this.afterBackupSyncPending) {
+        this.afterBackupSyncPending = false;
+        this.onBackupComplete().catch((error: unknown) => {
+          logger.warn({ error }, 'Held post-backup cloud sync failed');
+        });
+      }
+    }
+  }
+
+  // The reason an automatic sync must wait, or null when it may run. LAN and filesystem targets never wait.
+  private automaticSyncHold(cloudSync: CloudSyncSettings | undefined): string | null {
+    const { syncTarget } = getProviderBindings(cloudSync);
+    if (syncTarget.kind !== 'rclone' || !syncTarget.requiresInternet) return null;
+    return AUTOMATIC_SYNC_BLOCKING_UPLINKS.has(this.uplinkState)
+      ? `internet link is ${this.uplinkState}`
+      : null;
   }
 
   async syncToCloud(): Promise<void> {
@@ -659,6 +701,13 @@ class CloudSyncService {
     const authStatus = await bindings.authService.getStatus();
     if (!authStatus.connected) {
       logger.debug({ provider }, 'Skipping post-backup cloud sync: provider not connected');
+      return { result: 'skipped', target: provider };
+    }
+
+    const hold = this.automaticSyncHold(settings.cloudSync);
+    if (hold) {
+      logger.info({ provider, reason: hold }, 'Holding post-backup cloud sync');
+      this.afterBackupSyncPending = true;
       return { result: 'skipped', target: provider };
     }
 
@@ -1067,9 +1116,14 @@ class CloudSyncService {
       (await settingsService.get()).cloudSync?.lastSync ?? null;
 
     try {
-      const lastSync = await readLastSync();
+      const settings = await settingsService.get();
       if (generation !== this.scheduleGeneration) return;
-      if (msUntilNextSync(lastSync, intervalMs, Date.now()) === 0) {
+      const hold = this.automaticSyncHold(settings.cloudSync);
+      const due =
+        msUntilNextSync(settings.cloudSync?.lastSync ?? null, intervalMs, Date.now()) === 0;
+      if (due && hold) {
+        logger.info({ reason: hold }, 'Scheduled cloud sync waiting');
+      } else if (due) {
         await this.syncToCloud();
       }
     } catch (error) {
