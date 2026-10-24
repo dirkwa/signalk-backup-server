@@ -52,6 +52,9 @@ const configSchema = Type.Object({
   /** SignalK server version, set by the plugin via env (used to tag backups). */
   signalkVersion: Type.String({ default: 'unknown' }),
 
+  /** Set by a plugin that reports the internet link state; automatic syncs then wait for its first report. */
+  uplinkReports: Type.Boolean({ default: false }),
+
   /** Maximum upload file size in bytes (default 1GB). */
   maxUploadSize: Type.Number({ default: 1024 * 1024 * 1024 }),
 
@@ -75,6 +78,7 @@ export function loadConfig(): Config {
     rcloneBinaryPath: process.env['RCLONE_BINARY_PATH'] ?? '/usr/local/bin/rclone',
     rcloneConfigPath: process.env['RCLONE_CONFIG_PATH'] ?? join(dataDir, 'rclone.conf'),
     signalkVersion: process.env['SIGNALK_VERSION'] ?? 'unknown',
+    uplinkReports: process.env['UPLINK_REPORTS'] === 'true',
     maxUploadSize: parseInt(process.env['MAX_UPLOAD_SIZE'] ?? String(1024 * 1024 * 1024), 10),
     logLevel: process.env['LOG_LEVEL'] ?? 'info',
     nodeEnv: process.env['NODE_ENV'] ?? 'development',

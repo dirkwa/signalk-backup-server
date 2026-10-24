@@ -133,6 +133,8 @@ server.listen(config.port, '0.0.0.0', async () => {
   // true on a fresh install (DEFAULT_SETTINGS in settings-service);
   // explicit-disable is preserved across restarts. cloudSyncService
   // reads its own schedule mode from settings.cloudSync.
+  if (config.uplinkReports) cloudSyncService.awaitFirstUplinkReport();
+
   try {
     const settings = await settingsService.get();
     if (settings.backupsEnabled !== false) {

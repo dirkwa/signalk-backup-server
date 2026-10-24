@@ -58,7 +58,10 @@ vi.mock('net', async (importOriginal) => {
   };
 });
 
-import { cloudSyncService } from '../../../src/services/cloud-sync-service.js';
+import {
+  cloudSyncService,
+  FIRST_UPLINK_REPORT_WAIT_MS,
+} from '../../../src/services/cloud-sync-service.js';
 import { gdriveAuthService } from '../../../src/services/gdrive-auth-service.js';
 
 const HOUR = 60 * 60 * 1000;
@@ -111,6 +114,40 @@ describe('automatic cloud sync and the internet link', () => {
     await cloudSyncService.startSchedule();
 
     await vi.advanceTimersByTimeAsync(0);
+    expect(sync).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds an overdue scheduled sync at startup until the first link report', async () => {
+    cloudSyncService.awaitFirstUplinkReport();
+    await cloudSyncService.startSchedule();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sync).not.toHaveBeenCalled();
+
+    cloudSyncService.setUplinkState(null);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sync).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the startup sync held when the first report is metered', async () => {
+    cloudSyncService.awaitFirstUplinkReport();
+    await cloudSyncService.startSchedule();
+
+    cloudSyncService.setUplinkState('metered');
+    await vi.advanceTimersByTimeAsync(FIRST_UPLINK_REPORT_WAIT_MS + HOUR);
+    expect(sync).not.toHaveBeenCalled();
+  });
+
+  it('stops waiting for a first link report that never comes', async () => {
+    settingsState.cloudSync.syncMode = 'after_backup';
+    cloudSyncService.awaitFirstUplinkReport();
+    await expect(cloudSyncService.onBackupComplete()).resolves.toEqual({
+      result: 'skipped',
+      target: 'gdrive',
+    });
+
+    await vi.advanceTimersByTimeAsync(FIRST_UPLINK_REPORT_WAIT_MS - 1);
+    expect(sync).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
     expect(sync).toHaveBeenCalledTimes(1);
   });
 

@@ -220,6 +220,9 @@ const AUTOMATIC_SYNC_BLOCKING_UPLINKS: ReadonlySet<UplinkState> = new Set([
   'offline',
 ]);
 
+// The startup backup and an overdue sync start before the plugin can report the link; when it announces reports, they wait this long for the first one.
+export const FIRST_UPLINK_REPORT_WAIT_MS = 3 * 60 * 1000;
+
 // Counted from the last sync, not from startup: a timer that restarts with the process never fires on a box that restarts more often than the interval.
 export function msUntilNextSync(lastSync: string | null, intervalMs: number, now: number): number {
   const lastSyncTime = lastSync ? new Date(lastSync).getTime() : 0;
@@ -378,6 +381,7 @@ class CloudSyncService {
   private internetCheckedAt: number | null = null;
   private internetCheckInFlight: Promise<boolean> | null = null;
   private uplinkState: UplinkState = null;
+  private firstUplinkReportTimeout: NodeJS.Timeout | null = null;
   // A post-backup sync the link held back; it runs once the link clears.
   private afterBackupSyncPending = false;
   private afterBackupRetryTimeout: NodeJS.Timeout | null = null;
@@ -420,18 +424,43 @@ class CloudSyncService {
     };
   }
 
+  awaitFirstUplinkReport(): void {
+    if (this.firstUplinkReportTimeout) return;
+    this.firstUplinkReportTimeout = setTimeout(() => {
+      logger.info('No internet link state reported; automatic cloud syncs no longer wait for one');
+      this.applyUplinkState(this.uplinkState);
+    }, FIRST_UPLINK_REPORT_WAIT_MS);
+    this.firstUplinkReportTimeout.unref();
+  }
+
   setUplinkState(state: UplinkState): void {
-    if (state === this.uplinkState) return;
-    logger.info({ from: this.uplinkState, to: state }, 'Internet link state changed');
-    const wasHeld = AUTOMATIC_SYNC_BLOCKING_UPLINKS.has(this.uplinkState);
+    if (state !== this.uplinkState) {
+      logger.info({ from: this.uplinkState, to: state }, 'Internet link state changed');
+    }
+    this.applyUplinkState(state);
+  }
+
+  private applyUplinkState(state: UplinkState): void {
+    const wasHeld = this.uplinkHoldsSyncs();
+    if (this.firstUplinkReportTimeout) {
+      clearTimeout(this.firstUplinkReportTimeout);
+      this.firstUplinkReportTimeout = null;
+    }
     this.uplinkState = state;
-    // A scheduled sync held back by the link runs as soon as the link allows it, not at the next hourly retry.
-    if (wasHeld && !AUTOMATIC_SYNC_BLOCKING_UPLINKS.has(state)) {
+    // A sync held back by the link runs as soon as the link allows it, not at the next hourly retry.
+    if (wasHeld && !this.uplinkHoldsSyncs()) {
       this.startSchedule().catch((error: unknown) => {
         logger.warn({ error }, 'Failed to restart the cloud sync schedule');
       });
       if (this.afterBackupSyncPending) void this.runHeldAfterBackupSync();
     }
+  }
+
+  private uplinkHoldsSyncs(): boolean {
+    return (
+      this.firstUplinkReportTimeout !== null ||
+      AUTOMATIC_SYNC_BLOCKING_UPLINKS.has(this.uplinkState)
+    );
   }
 
   // The held sync stays pending until it succeeds, so a failure once the link clears is retried rather than lost.
@@ -470,6 +499,7 @@ class CloudSyncService {
   private automaticSyncHold(cloudSync: CloudSyncSettings | undefined): string | null {
     const { syncTarget } = getProviderBindings(cloudSync);
     if (syncTarget.kind !== 'rclone' || !syncTarget.requiresInternet) return null;
+    if (this.firstUplinkReportTimeout) return 'waiting for the internet link state';
     return AUTOMATIC_SYNC_BLOCKING_UPLINKS.has(this.uplinkState)
       ? `internet link is ${this.uplinkState}`
       : null;
