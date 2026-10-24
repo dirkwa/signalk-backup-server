@@ -42,3 +42,25 @@ export const smbConnectSchema = Type.Object(
 );
 
 export type SmbConnectBody = Static<typeof smbConnectSchema>;
+
+export const uplinkStateSchema = Type.Object(
+  {
+    state: Type.Union(
+      [
+        Type.Literal('online'),
+        Type.Literal('metered'),
+        Type.Literal('captive'),
+        Type.Literal('offline'),
+        Type.Null(),
+      ],
+      {
+        description:
+          "The boat's internet link as signalk-internet reports it (network.internet.state); null when unknown",
+      }
+    ),
+  },
+  { additionalProperties: false, $id: 'UplinkStateBody' }
+);
+
+export type UplinkStateBody = Static<typeof uplinkStateSchema>;
+export type UplinkState = UplinkStateBody['state'];

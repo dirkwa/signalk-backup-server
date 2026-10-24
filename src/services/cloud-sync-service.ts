@@ -28,6 +28,7 @@ import {
 import { installIdentityService } from './install-identity-service.js';
 import { gdriveAuthService, RCLONE_GDRIVE_REMOTE_NAME } from './gdrive-auth-service.js';
 import { localFsService } from './local-fs-service.js';
+import type { UplinkState } from '../schemas/cloud.js';
 import { smbAuthService, RCLONE_SMB_REMOTE_NAME } from './smb-auth-service.js';
 import { kopiaClient } from './kopia-client.js';
 import type { CloudRestorePhase, CloudRestorePrepareResult } from '../types/backup.js';
@@ -212,6 +213,16 @@ export const GDRIVE_RCLONE_FLAGS: readonly string[] = [
 
 const SYNC_RETRY_MS = 60 * 60 * 1000;
 
+// Automatic syncs over the internet wait for a link that is not metered, behind a captive portal or down; one the user starts always runs.
+const AUTOMATIC_SYNC_BLOCKING_UPLINKS: ReadonlySet<UplinkState> = new Set([
+  'metered',
+  'captive',
+  'offline',
+]);
+
+// The startup backup and an overdue sync start before the plugin can report the link; when it announces reports, they wait this long for the first one.
+export const FIRST_UPLINK_REPORT_WAIT_MS = 3 * 60 * 1000;
+
 // Counted from the last sync, not from startup: a timer that restarts with the process never fires on a box that restarts more often than the interval.
 export function msUntilNextSync(lastSync: string | null, intervalMs: number, now: number): number {
   const lastSyncTime = lastSync ? new Date(lastSync).getTime() : 0;
@@ -335,6 +346,8 @@ export interface CloudSyncStatus {
   lastSyncError: string | null;
   /** Whether internet is available */
   internetAvailable: boolean | null;
+  /** The boat's internet link as last reported by the plugin; null when unknown */
+  uplinkState: UplinkState;
   /** Human-readable label for the connected destination (gdrive email, etc). */
   email?: string;
   /** Progress info during active sync */
@@ -367,6 +380,12 @@ class CloudSyncService {
   private internetAvailable: boolean | null = null;
   private internetCheckedAt: number | null = null;
   private internetCheckInFlight: Promise<boolean> | null = null;
+  private uplinkState: UplinkState = null;
+  private firstUplinkReportTimeout: NodeJS.Timeout | null = null;
+  // A post-backup sync the link held back; it runs once the link clears.
+  private afterBackupSyncPending = false;
+  private afterBackupRetryTimeout: NodeJS.Timeout | null = null;
+  private afterBackupHolds = 0;
   private syncProgress: SyncProgress | null = null;
 
   // Cloud restore state
@@ -399,9 +418,91 @@ class CloudSyncService {
       lastSync: settings.cloudSync?.lastSync ?? null,
       lastSyncError: settings.cloudSync?.lastSyncError ?? null,
       internetAvailable: this.internetAvailable,
+      uplinkState: this.uplinkState,
       email: authStatus.email,
       syncProgress: this.syncProgress ?? undefined,
     };
+  }
+
+  awaitFirstUplinkReport(): void {
+    if (this.firstUplinkReportTimeout) return;
+    this.firstUplinkReportTimeout = setTimeout(() => {
+      logger.info('No internet link state reported; automatic cloud syncs no longer wait for one');
+      this.applyUplinkState(this.uplinkState);
+    }, FIRST_UPLINK_REPORT_WAIT_MS);
+    this.firstUplinkReportTimeout.unref();
+  }
+
+  setUplinkState(state: UplinkState): void {
+    if (state !== this.uplinkState) {
+      logger.info({ from: this.uplinkState, to: state }, 'Internet link state changed');
+    }
+    this.applyUplinkState(state);
+  }
+
+  private applyUplinkState(state: UplinkState): void {
+    const wasHeld = this.uplinkHoldsSyncs();
+    if (this.firstUplinkReportTimeout) {
+      clearTimeout(this.firstUplinkReportTimeout);
+      this.firstUplinkReportTimeout = null;
+    }
+    this.uplinkState = state;
+    // A sync held back by the link runs as soon as the link allows it, not at the next hourly retry.
+    if (wasHeld && !this.uplinkHoldsSyncs()) {
+      this.startSchedule().catch((error: unknown) => {
+        logger.warn({ error }, 'Failed to restart the cloud sync schedule');
+      });
+      if (this.afterBackupSyncPending) void this.runHeldAfterBackupSync();
+    }
+  }
+
+  private uplinkHoldsSyncs(): boolean {
+    return (
+      this.firstUplinkReportTimeout !== null ||
+      AUTOMATIC_SYNC_BLOCKING_UPLINKS.has(this.uplinkState)
+    );
+  }
+
+  // The held sync stays pending until it succeeds, so a failure once the link clears is retried rather than lost.
+  private async runHeldAfterBackupSync(): Promise<void> {
+    this.clearHeldAfterBackupSync();
+    let failed: boolean;
+    try {
+      const outcome = await this.onBackupComplete();
+      // A skip naming a target is a disconnected provider unless the link held the sync again (which re-sets pending).
+      const providerDisconnected =
+        outcome.result === 'skipped' &&
+        outcome.target !== undefined &&
+        !this.afterBackupSyncPending;
+      failed = outcome.result === 'failure' || providerDisconnected;
+    } catch (error) {
+      logger.warn({ error }, 'Held post-backup cloud sync failed');
+      failed = true;
+    }
+    if (!failed) return;
+    this.afterBackupSyncPending = true;
+    this.afterBackupRetryTimeout = setTimeout(() => {
+      this.afterBackupRetryTimeout = null;
+      void this.runHeldAfterBackupSync();
+    }, SYNC_RETRY_MS);
+    this.afterBackupRetryTimeout.unref();
+  }
+
+  private clearHeldAfterBackupSync(): void {
+    if (this.afterBackupRetryTimeout) {
+      clearTimeout(this.afterBackupRetryTimeout);
+      this.afterBackupRetryTimeout = null;
+    }
+    this.afterBackupSyncPending = false;
+  }
+
+  private automaticSyncHold(cloudSync: CloudSyncSettings | undefined): string | null {
+    const { syncTarget } = getProviderBindings(cloudSync);
+    if (syncTarget.kind !== 'rclone' || !syncTarget.requiresInternet) return null;
+    if (this.firstUplinkReportTimeout) return 'waiting for the internet link state';
+    return AUTOMATIC_SYNC_BLOCKING_UPLINKS.has(this.uplinkState)
+      ? `internet link is ${this.uplinkState}`
+      : null;
   }
 
   async syncToCloud(): Promise<void> {
@@ -662,8 +763,19 @@ class CloudSyncService {
       return { result: 'skipped', target: provider };
     }
 
+    const hold = this.automaticSyncHold(settings.cloudSync);
+    if (hold) {
+      logger.info({ provider, reason: hold }, 'Holding post-backup cloud sync');
+      this.afterBackupHolds++;
+      this.afterBackupSyncPending = true;
+      return { result: 'skipped', target: provider };
+    }
+
+    const holdsBefore = this.afterBackupHolds;
     try {
       await this.syncToCloud();
+      // A backup held while this sync ran is not in it and still needs its own sync.
+      if (this.afterBackupHolds === holdsBefore) this.clearHeldAfterBackupSync();
       return { result: 'success', target: provider };
     } catch (error) {
       // Don't fail the backup if cloud sync fails
@@ -1067,9 +1179,14 @@ class CloudSyncService {
       (await settingsService.get()).cloudSync?.lastSync ?? null;
 
     try {
-      const lastSync = await readLastSync();
+      const settings = await settingsService.get();
       if (generation !== this.scheduleGeneration) return;
-      if (msUntilNextSync(lastSync, intervalMs, Date.now()) === 0) {
+      const hold = this.automaticSyncHold(settings.cloudSync);
+      const due =
+        msUntilNextSync(settings.cloudSync?.lastSync ?? null, intervalMs, Date.now()) === 0;
+      if (due && hold) {
+        logger.info({ reason: hold }, 'Scheduled cloud sync waiting');
+      } else if (due) {
         await this.syncToCloud();
       }
     } catch (error) {

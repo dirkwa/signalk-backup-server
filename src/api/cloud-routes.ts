@@ -19,7 +19,12 @@ import { restoreService, type RestoreProgress } from '../services/restore-servic
 import { settingsService } from '../services/settings-service.js';
 import { logger } from '../services/logger.js';
 import { createApiRouter } from './openapi-registry.js';
-import { smbConnectSchema, type SmbConnectBody } from '../schemas/cloud.js';
+import {
+  smbConnectSchema,
+  uplinkStateSchema,
+  type SmbConnectBody,
+  type UplinkStateBody,
+} from '../schemas/cloud.js';
 import type { ApiResponse } from '../types/api.js';
 
 const api = createApiRouter('Cloud');
@@ -756,6 +761,30 @@ api.post(
       };
       res.status(404).json(response);
     }
+  }
+);
+
+api.put(
+  '/uplink',
+  {
+    summary: 'Report internet link state',
+    description:
+      'The signalk-backup plugin reports the internet link state it reads from Signal K (signalk-internet). While it is metered, captive or offline, automatic syncs to an internet target wait; a manual sync still runs.',
+    body: uplinkStateSchema,
+    responses: {
+      200: { description: 'State recorded' },
+      400: { description: 'Invalid state' },
+    },
+  },
+  (req: Request, res: Response) => {
+    const { state } = req.body as UplinkStateBody;
+    cloudSyncService.setUplinkState(state);
+    const response: ApiResponse<{ state: UplinkStateBody['state'] }> = {
+      success: true,
+      data: { state },
+      timestamp: new Date().toISOString(),
+    };
+    res.json(response);
   }
 );
 
