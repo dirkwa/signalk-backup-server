@@ -185,7 +185,11 @@ describe('automatic cloud sync and the internet link', () => {
     await vi.advanceTimersByTimeAsync(0);
 
     cloudSyncService.setUplinkState('metered');
-    await cloudSyncService.onBackupComplete();
+    await expect(cloudSyncService.onBackupComplete()).resolves.toEqual({
+      result: 'skipped',
+      target: 'gdrive',
+    });
+    expect(sync).toHaveBeenCalledTimes(1);
     finish();
     await running;
 
