@@ -59,6 +59,7 @@ vi.mock('net', async (importOriginal) => {
 });
 
 import { cloudSyncService } from '../../../src/services/cloud-sync-service.js';
+import { gdriveAuthService } from '../../../src/services/gdrive-auth-service.js';
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
@@ -152,6 +153,23 @@ describe('automatic cloud sync and the internet link', () => {
 
     await vi.advanceTimersByTimeAsync(2 * HOUR);
     expect(sync).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a held post-backup sync while the provider is disconnected', async () => {
+    settingsState.cloudSync.syncMode = 'after_backup';
+    cloudSyncService.setUplinkState('metered');
+    await cloudSyncService.onBackupComplete();
+    vi.mocked(gdriveAuthService.getStatus).mockResolvedValueOnce({
+      connected: false,
+      configured: true,
+    } as Awaited<ReturnType<typeof gdriveAuthService.getStatus>>);
+
+    cloudSyncService.setUplinkState('online');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sync).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(HOUR);
+    expect(sync).toHaveBeenCalledTimes(1);
   });
 
   it('keeps a backup held during a running post-backup sync pending', async () => {

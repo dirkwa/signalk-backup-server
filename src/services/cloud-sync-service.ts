@@ -439,7 +439,13 @@ class CloudSyncService {
     this.clearHeldAfterBackupSync();
     let failed: boolean;
     try {
-      failed = (await this.onBackupComplete()).result === 'failure';
+      const outcome = await this.onBackupComplete();
+      // A skip naming a target is a disconnected provider unless the link held the sync again (which re-sets pending).
+      const providerDisconnected =
+        outcome.result === 'skipped' &&
+        outcome.target !== undefined &&
+        !this.afterBackupSyncPending;
+      failed = outcome.result === 'failure' || providerDisconnected;
     } catch (error) {
       logger.warn({ error }, 'Held post-backup cloud sync failed');
       failed = true;
